@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.0"
+DECKSHIFT_VERSION="0.1.1"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -777,6 +777,16 @@ check_steam_dependencies() {
   echo "================================================================"
 
   check_steam_config
+
+  # Bootstrap Steam — launches it in the background so its first-run client
+  # update happens in parallel with the rest of the install. Same pattern as
+  # omarchy-install-gaming-steam. Skipped silently if Steam isn't installed
+  # (e.g. user declined to install missing required deps).
+  if check_package steam && command -v gtk-launch >/dev/null 2>&1; then
+    info "Launching Steam to complete its first-run download..."
+    setsid gtk-launch steam >/dev/null 2>&1 < /dev/null &
+    disown 2>/dev/null || true
+  fi
 }
 
 # Checks that the user is in the right Linux groups for gaming:
@@ -1258,6 +1268,13 @@ setup_settings_tui() {
 
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications 2>/dev/null || true
+  fi
+
+  # Refresh Walker so the new entry shows up immediately. omarchy-restart-walker
+  # handles the elephant.service + walker autostart restart for us; without
+  # this, the entry only appears after the next Walker restart / login.
+  if command -v omarchy-restart-walker >/dev/null 2>&1; then
+    omarchy-restart-walker 2>/dev/null || true
   fi
 
   info "Settings TUI installed — launch from Walker (Super+Space → 'DeckShift Settings')"
