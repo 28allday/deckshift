@@ -1,0 +1,509 @@
+#!/bin/bash
+# ==============================================================================
+# deckshift-settings — Gaming Mode settings TUI
+#
+# Launched from Walker (Super+Space → "DeckShift Settings"). Lets the user
+# adjust which monitor, GPU, resolution, and refresh rate Gaming Mode uses,
+# without editing ~/.config/environment.d/gamescope-session-plus.conf by hand.
+#
+# Selections are buffered in memory — nothing is written until the user picks
+# "Save and exit". "Cancel" discards changes. The on-disk file is rewritten in
+# place, preserving any keys the TUI doesn't manage (ADAPTIVE_SYNC, HDR, etc).
+# ==============================================================================
+
+# -u (nounset) trips on empty associative arrays even with `${arr[k]+x}`
+# guards, so we run with -eo pipefail only.
+set -eo pipefail
+
+CONF="${HOME}/.config/environment.d/gamescope-session-plus.conf"
+
+# Theme — match the "unsaved changes" amber across all gum prompts so the
+# cursor / highlighted line is readable regardless of terminal palette.
+ACCENT=214      # amber, also used for unsaved-changes label
+HEADER_COLOR=212
+export GUM_CHOOSE_CURSOR_FOREGROUND="$ACCENT"
+export GUM_CHOOSE_SELECTED_FOREGROUND="$ACCENT"
+export GUM_CHOOSE_HEADER_FOREGROUND="$HEADER_COLOR"
+export GUM_CONFIRM_SELECTED_FOREGROUND="$ACCENT"
+export GUM_CONFIRM_PROMPT_FOREGROUND="$HEADER_COLOR"
+export GUM_INPUT_PROMPT_FOREGROUND="$ACCENT"
+
+# Buffered pending changes — flushed only on Save and exit.
+# PENDING_SET[KEY]=VALUE   → write KEY=VALUE
+# PENDING_UNSET[KEY]=1     → delete KEY from the conf
+declare -A PENDING_SET
+declare -A PENDING_UNSET
+
+die() { echo "[!] $*" >&2; exit 1; }
+
+command -v gum >/dev/null || die "gum is required (install with: omarchy-pkg-add gum)"
+
+# Wrappers — gum choose / gum input exit non-zero on Escape/Ctrl-C, which
+# would trip `set -e` and kill the TUI. These swallow that so a cancelled
+# prompt simply returns an empty string, letting the caller treat it as
+# "user backed out" and return to the main menu.
+gchoose() { gum choose "$@" || true; }
+ginput()  { gum input  "$@" || true; }
+command -v lspci >/dev/null || die "lspci is required"
+command -v jq >/dev/null || die "jq is required (install with: omarchy-pkg-add jq)"
+command -v hyprctl >/dev/null || die "hyprctl is required (this TUI is for Hyprland sessions)"
+
+# ------------------------------------------------------------------------------
+# Conf helpers — read straight from disk; writes go through pending_* below so
+# nothing hits the file until the user explicitly saves.
+# ------------------------------------------------------------------------------
+
+conf_get() {
+  local key="$1"
+  [[ -f "$CONF" ]] || return 0
+  # awk (not grep|tail|cut) so a missing key yields empty + exit 0 rather than
+  # tripping pipefail and killing the TUI under `set -e`.
+  awk -F= -v k="$key" '$1==k { sub(/^[^=]*=/,""); v=$0 } END { print v }' "$CONF"
+}
+
+# Effective value = pending change if any, else what's on disk. Used by the
+# UI to show what the conf will look like after Save.
+effective() {
+  local key="$1"
+  if [[ -n "${PENDING_UNSET[$key]:-}" ]]; then
+    echo ""
+  elif [[ -n "${PENDING_SET[$key]+x}" ]]; then
+    echo "${PENDING_SET[$key]}"
+  else
+    conf_get "$key"
+  fi
+}
+
+pending_set() {
+  local key="$1" value="$2"
+  PENDING_SET["$key"]="$value"
+  unset 'PENDING_UNSET[$key]'
+}
+
+pending_unset() {
+  local key="$1"
+  PENDING_UNSET["$key"]=1
+  unset 'PENDING_SET[$key]'
+}
+
+has_pending_changes() {
+  (( ${#PENDING_SET[@]} > 0 )) || (( ${#PENDING_UNSET[@]} > 0 ))
+}
+
+# Write all buffered changes to disk in one pass. Preserves the order/contents
+# of keys we don't manage.
+flush_pending() {
+  has_pending_changes || return 0
+  mkdir -p "$(dirname "$CONF")"
+  touch "$CONF"
+
+  for key in "${!PENDING_UNSET[@]}"; do
+    sed -i "/^${key}=/d" "$CONF"
+  done
+
+  for key in "${!PENDING_SET[@]}"; do
+    local value="${PENDING_SET[$key]}"
+    if grep -qE "^${key}=" "$CONF"; then
+      sed -i "s|^${key}=.*|${key}=${value}|" "$CONF"
+    else
+      echo "${key}=${value}" >> "$CONF"
+    fi
+  done
+}
+
+# ------------------------------------------------------------------------------
+# Hardware detection
+# ------------------------------------------------------------------------------
+
+# Cached hyprctl data — populated by refresh_monitor_data, used by all menus.
+# HYPR_MODES = newline-separated WIDTHxHEIGHT@RATEHz strings for the active
+#   connector. HYPR_NATIVE / HYPR_MAX_REFRESH = monitor's max capability.
+HYPR_MODES=""
+HYPR_NATIVE=""
+HYPR_MAX_REFRESH=""
+HYPR_ACTIVE_CONNECTOR=""
+
+# List every connected monitor as "NAME|WIDTHxHEIGHT". hyprctl monitors all
+# returns every connected output (enabled or not), which is what we want.
+list_connected_monitors() {
+  hyprctl monitors all -j 2>/dev/null \
+    | jq -r '.[] | select(.disabled==false or .disabled==true) | "\(.name)|\((.availableModes // [])[0] // "" | sub("@.*"; ""))"'
+}
+
+# Refresh the cached mode data for the connector we're targeting. Falls back
+# to the first connected output if no OUTPUT_CONNECTOR is set in the buffer/conf.
+refresh_monitor_data() {
+  local target
+  target=$(effective OUTPUT_CONNECTOR)
+  if [[ -z "$target" ]]; then
+    target=$(hyprctl monitors -j 2>/dev/null | jq -r '.[0].name // empty')
+  fi
+  HYPR_ACTIVE_CONNECTOR="$target"
+  if [[ -z "$target" ]]; then
+    HYPR_MODES=""; HYPR_NATIVE=""; HYPR_MAX_REFRESH=""
+    return
+  fi
+  HYPR_MODES=$(hyprctl monitors all -j 2>/dev/null \
+    | jq -r --arg n "$target" '.[] | select(.name==$n) | .availableModes[]?')
+  HYPR_NATIVE=$(echo "$HYPR_MODES" | head -1 | sed 's/@.*//')
+  # Max refresh AT NATIVE resolution, rounded to integer Hz for display.
+  # (Reporting the max across all modes would mislead — e.g. a 4K@60 panel
+  # might show 100Hz at 1024x768, which isn't useful info for Gaming Mode.)
+  HYPR_MAX_REFRESH=$(echo "$HYPR_MODES" \
+    | grep "^${HYPR_NATIVE}@" \
+    | awk -F'@' '{ sub(/Hz$/,"",$2); printf "%d\n", $2 + 0.5 }' \
+    | sort -un | tail -1)
+}
+
+# Unique list of resolutions supported by the active connector, ordered
+# largest first.
+list_supported_resolutions() {
+  echo "$HYPR_MODES" | sed 's/@.*//' | awk '!seen[$0]++'
+}
+
+# Refresh rates supported at a given resolution (or all rates if no res given).
+# Output is integer Hz, deduplicated (60.00 and 59.94 both round to 60).
+list_supported_refresh_rates() {
+  local res="${1:-}"
+  if [[ -n "$res" ]]; then
+    echo "$HYPR_MODES" | grep -E "^${res}@"
+  else
+    echo "$HYPR_MODES"
+  fi | awk -F'@' '{ sub(/Hz$/,"",$2); printf "%d\n", $2 + 0.5 }' \
+     | sort -un
+}
+
+# Validation — does the requested mode fit the monitor's reported limits?
+resolution_supported() {
+  local w="$1" h="$2"
+  [[ -z "$HYPR_NATIVE" ]] && return 0   # unknown → don't block
+  local nw=${HYPR_NATIVE%%x*}
+  local nh=${HYPR_NATIVE##*x}
+  (( w <= nw )) && (( h <= nh ))
+}
+
+refresh_rate_supported() {
+  local rate="$1"
+  [[ -z "$HYPR_MODES" ]] && return 0
+  echo "$HYPR_MODES" \
+    | awk -F'@' -v r="$rate" '{ sub(/Hz$/,"",$2); if (int($2+0.5) == int(r+0.5)) found=1 } END { exit !found }'
+}
+
+list_gpus() {
+  local pci_slot vendor_dev kind label
+  /usr/bin/lspci -nn | grep -iE 'vga|3d|display' | while read -r line; do
+    pci_slot=$(awk '{print $1}' <<<"$line")
+    vendor_dev=$(grep -oP '\[\K[0-9a-fA-F]{4}:[0-9a-fA-F]{4}(?=\])' <<<"$line" | tail -1)
+    if grep -qi nvidia <<<"$line"; then
+      kind="nvidia"
+    elif grep -qiE 'amd|advanced micro|radeon' <<<"$line"; then
+      kind="amd"
+    elif grep -qi intel <<<"$line"; then
+      kind="intel"
+    else
+      kind="other"
+    fi
+    label=$(sed -E 's/.*: //; s/ \[[0-9a-f:]+\] \(rev [0-9a-f]+\)$//; s/ \[[0-9a-f:]+\]$//' <<<"$line")
+    echo "${pci_slot}|${vendor_dev}|${kind}|${label}"
+  done
+}
+
+# ------------------------------------------------------------------------------
+# Display — show current/effective values, marking pending edits.
+# ------------------------------------------------------------------------------
+
+show_state() {
+  local connector width height refresh vk_adapter dri_prime
+  connector=$(effective OUTPUT_CONNECTOR)
+  width=$(effective SCREEN_WIDTH)
+  height=$(effective SCREEN_HEIGHT)
+  refresh=$(effective CUSTOM_REFRESH_RATES)
+  vk_adapter=$(effective VULKAN_ADAPTER)
+  dri_prime=$(effective DRI_PRIME)
+
+  local pending_label=""
+  has_pending_changes && pending_label=" $(gum style --foreground 214 '(unsaved changes)')"
+
+  local monitor_label="${connector:-<auto>}"
+  if [[ -n "$HYPR_ACTIVE_CONNECTOR" && -n "$HYPR_NATIVE" ]]; then
+    monitor_label="${monitor_label} (max ${HYPR_NATIVE} @ ${HYPR_MAX_REFRESH:-?}Hz)"
+  fi
+
+  cat <<EOF
+Gaming Mode display settings${pending_label}:
+
+  Monitor      : ${monitor_label}
+  Resolution   : ${width:-?}x${height:-?}
+  Refresh rate : ${refresh:-<auto>} Hz
+  GPU (NVIDIA) : ${vk_adapter:-<not set>}
+  GPU (AMD)    : ${dri_prime:-<not set>}
+
+Config file : ${CONF}
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# Setters — each one updates the in-memory pending buffer only.
+# ------------------------------------------------------------------------------
+
+choose_monitor() {
+  local choice connector
+  mapfile -t connected < <(list_connected_monitors)
+  local -a labels=()
+  for entry in "${connected[@]}"; do
+    labels+=("$entry")
+  done
+  labels+=("(clear / let gamescope auto-pick)")
+  if (( ${#connected[@]} == 0 )); then
+    gum confirm "No connected monitors detected. Set OUTPUT_CONNECTOR manually?" || return 0
+    connector=$(ginput --prompt "Connector (e.g. DP-1, HDMI-A-1): ")
+    [[ -z "$connector" ]] && return 0
+    pending_set OUTPUT_CONNECTOR "$connector"
+    return 0
+  fi
+  choice=$(printf '%s\n' "${labels[@]}" | gchoose --header "Select monitor for Gaming Mode")
+  [[ -z "$choice" ]] && return 0
+  if [[ "$choice" == "(clear"* ]]; then
+    pending_unset OUTPUT_CONNECTOR
+  else
+    pending_set OUTPUT_CONNECTOR "${choice%%|*}"
+  fi
+}
+
+choose_resolution() {
+  refresh_monitor_data
+  local choice w h
+  local -a options=()
+
+  # 1. Monitor-supported resolutions (top of the list, always safe)
+  if [[ -n "$HYPR_MODES" ]]; then
+    while read -r res; do
+      [[ -z "$res" ]] && continue
+      options+=("$res  (supported by ${HYPR_ACTIVE_CONNECTOR})")
+    done < <(list_supported_resolutions)
+  fi
+
+  # 2. Common presets — mark anything that exceeds the detected max
+  local -a presets=("1280x720" "1920x1080" "2560x1440" "3840x2160")
+  local -A already_listed=()
+  while read -r r; do already_listed["$r"]=1; done < <(list_supported_resolutions)
+  for preset in "${presets[@]}"; do
+    [[ -n "${already_listed[$preset]:-}" ]] && continue
+    local pw=${preset%%x*} ph=${preset##*x}
+    if resolution_supported "$pw" "$ph"; then
+      options+=("$preset  (preset)")
+    else
+      options+=("$preset  (preset — [unsupported by monitor])")
+    fi
+  done
+
+  options+=("Custom…")
+
+  choice=$(printf '%s\n' "${options[@]}" | gchoose --header "Select launch resolution (max: ${HYPR_NATIVE:-unknown})")
+  [[ -z "$choice" ]] && return 0
+  if [[ "$choice" == "Custom…" ]]; then
+    w=$(ginput --prompt "Width:  " --placeholder "2560")
+    h=$(ginput --prompt "Height: " --placeholder "1440")
+  else
+    local mode=${choice%% *}
+    w=${mode%%x*}
+    h=${mode##*x}
+  fi
+  [[ -z "$w" || -z "$h" ]] && return 0
+  pending_set SCREEN_WIDTH "$w"
+  pending_set SCREEN_HEIGHT "$h"
+}
+
+choose_refresh_rate() {
+  refresh_monitor_data
+  local choice rate
+
+  # Use the buffered/saved resolution to filter rates if set, otherwise
+  # show all rates this monitor supports across any resolution.
+  local current_w current_h res_filter=""
+  current_w=$(effective SCREEN_WIDTH)
+  current_h=$(effective SCREEN_HEIGHT)
+  if [[ -n "$current_w" && -n "$current_h" ]]; then
+    res_filter="${current_w}x${current_h}"
+  fi
+
+  local -a options=()
+  local -A supported_set=()
+
+  # 1. Rates supported at the active resolution (top of list)
+  while read -r r; do
+    [[ -z "$r" ]] && continue
+    supported_set["$r"]=1
+    if [[ -n "$res_filter" ]]; then
+      options+=("$r  (supported at ${res_filter})")
+    else
+      options+=("$r  (supported by ${HYPR_ACTIVE_CONNECTOR})")
+    fi
+  done < <(list_supported_refresh_rates "$res_filter")
+
+  # 2. Common presets — mark unsupported
+  local -a presets=(60 75 100 120 144 165 240)
+  for preset in "${presets[@]}"; do
+    [[ -n "${supported_set[$preset]:-}" ]] && continue
+    if refresh_rate_supported "$preset"; then
+      options+=("$preset  (preset)")
+    else
+      options+=("$preset  (preset — [unsupported by monitor])")
+    fi
+  done
+
+  options+=("Custom…")
+
+  choice=$(printf '%s\n' "${options[@]}" | gchoose --header "Select refresh rate (Hz, max: ${HYPR_MAX_REFRESH:-unknown})")
+  [[ -z "$choice" ]] && return 0
+  if [[ "$choice" == "Custom…" ]]; then
+    rate=$(ginput --prompt "Rate (Hz): " --placeholder "144")
+  else
+    rate=${choice%% *}
+  fi
+  [[ -z "$rate" ]] && return 0
+  pending_set CUSTOM_REFRESH_RATES "$rate"
+}
+
+choose_gpu() {
+  local choice
+  mapfile -t gpus < <(list_gpus)
+  if (( ${#gpus[@]} == 0 )); then
+    gum style --foreground 196 "No GPUs detected via lspci"
+    return 1
+  fi
+  local -a labels=()
+  for entry in "${gpus[@]}"; do
+    IFS='|' read -r slot vendor_dev kind label <<<"$entry"
+    labels+=("[$kind] $label  ($vendor_dev @ $slot)")
+  done
+  labels+=("(clear GPU override — let system decide)")
+  choice=$(printf '%s\n' "${labels[@]}" | gchoose --header "Select GPU for Gaming Mode")
+  [[ -z "$choice" ]] && return 0
+  if [[ "$choice" == "(clear"* ]]; then
+    pending_unset VULKAN_ADAPTER
+    pending_unset DRI_PRIME
+    pending_unset GBM_BACKEND
+    return 0
+  fi
+  local idx=0 selected=""
+  for label in "${labels[@]}"; do
+    if [[ "$label" == "$choice" ]]; then
+      selected="${gpus[$idx]}"
+      break
+    fi
+    idx=$((idx + 1))
+  done
+  IFS='|' read -r slot vendor_dev kind label <<<"$selected"
+  case "$kind" in
+    nvidia)
+      pending_set VULKAN_ADAPTER "$vendor_dev"
+      pending_set GBM_BACKEND "nvidia-drm"
+      pending_unset DRI_PRIME
+      ;;
+    amd|intel|other)
+      local dri_tag="pci-$(echo "$slot" | sed 's/[:.]/_/g')"
+      [[ "$dri_tag" != pci-0000* ]] && dri_tag="pci-0000_${dri_tag#pci-}"
+      pending_set DRI_PRIME "$dri_tag"
+      pending_unset VULKAN_ADAPTER
+      pending_unset GBM_BACKEND
+      ;;
+  esac
+}
+
+# Pre-save validation. Compares the about-to-be-saved values against the
+# active monitor's reported capabilities (via hyprctl) and asks for explicit
+# confirmation if anything looks risky. Returns 0 = ok to save, 1 = cancelled.
+confirm_risky_save() {
+  refresh_monitor_data
+  [[ -z "$HYPR_MODES" ]] && return 0
+
+  local w h rate
+  w=$(effective SCREEN_WIDTH)
+  h=$(effective SCREEN_HEIGHT)
+  rate=$(effective CUSTOM_REFRESH_RATES)
+
+  local -a warnings=()
+  if [[ -n "$w" && -n "$h" ]] && ! resolution_supported "$w" "$h"; then
+    warnings+=("• Resolution ${w}x${h} exceeds detected monitor max ${HYPR_NATIVE}")
+  fi
+  if [[ -n "$rate" ]] && ! refresh_rate_supported "$rate"; then
+    warnings+=("• Refresh rate ${rate}Hz is not in the monitor's supported list (max: ${HYPR_MAX_REFRESH:-?}Hz)")
+  fi
+
+  (( ${#warnings[@]} == 0 )) && return 0
+
+  clear
+  gum style --foreground 196 --bold "Warning — selected values may not work:"
+  echo ""
+  printf '  %s\n' "${warnings[@]}"
+  echo ""
+  gum style --foreground 244 "If Gaming Mode shows a black screen, press Super+Shift+R to return to desktop."
+  echo ""
+  gum confirm "Save anyway?" --default=false
+}
+
+# ------------------------------------------------------------------------------
+# Main loop — buffer until Save and exit / Cancel.
+# ------------------------------------------------------------------------------
+
+main() {
+  while true; do
+    refresh_monitor_data
+    clear
+    gum style \
+      --border double --margin "1" --padding "1 4" --border-foreground 212 \
+      "DECKSHIFT — Gaming Mode Settings"
+    show_state
+    echo ""
+
+    local save_label="Save and exit"
+    local cancel_label="Cancel (exit)"
+    if has_pending_changes; then
+      save_label="Save and exit  ★"
+      cancel_label="Discard changes and exit"
+    fi
+
+    local action
+    action=$(gchoose --header "What do you want to change?" \
+      "Monitor" \
+      "Resolution" \
+      "Refresh rate" \
+      "GPU" \
+      "$save_label" \
+      "$cancel_label")
+    case "$action" in
+      "Monitor")        choose_monitor       ;;
+      "Resolution")     choose_resolution    ;;
+      "Refresh rate")   choose_refresh_rate  ;;
+      "GPU")            choose_gpu           ;;
+      "Save and exit"*)
+        if ! confirm_risky_save; then
+          continue
+        fi
+        flush_pending
+        clear
+        gum style --foreground 212 "Settings saved to $CONF"
+        gum style --foreground 244 "Changes apply next time you enter Gaming Mode (Super+Shift+S)."
+        sleep 1
+        return 0
+        ;;
+      "Cancel (exit)"|"Discard changes and exit")
+        if has_pending_changes; then
+          gum confirm "Discard unsaved changes?" --default=true || continue
+        fi
+        clear
+        gum style --foreground 244 "No changes saved."
+        sleep 1
+        return 0
+        ;;
+      "")
+        # Esc / Ctrl-C on the main menu — stay on main rather than exit.
+        # User must pick "Cancel" or "Save and exit" explicitly to leave.
+        continue
+        ;;
+    esac
+  done
+}
+
+main "$@"

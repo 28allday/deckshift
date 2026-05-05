@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DeckShift Settings
+GenericName=Gaming Mode Settings
+Comment=Adjust monitor, GPU, resolution, and refresh rate for DeckShift Gaming Mode
+Exec=xdg-terminal-exec --app-id=TUI.float -e deckshift-settings
+Icon=input-gaming
+Terminal=false
+StartupNotify=true
+Categories=Settings;Game;
+Keywords=gaming;steam;gamescope;deck;monitor;refresh;gpu;deckshift;
