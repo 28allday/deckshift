@@ -1,30 +1,53 @@
 # DeckShift
 
-**Version 0.1.0** — Steam Deck-style gaming mode for Linux + Hyprland. Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
+**Version 0.1.3** — Steam Deck-style gaming mode for Linux + Hyprland. Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
 
 Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift as the project moves toward distro-portability.
 
 > **Current status**: targets [Omarchy](https://omarchy.com) (Arch + Hyprland + SDDM + iwd). Works on other Arch + Hyprland setups with minor manual tweaks. Cross-distro support (Fedora / openSUSE / Cachy) is the next direction.
 
-## What's New vs Super-Shift-S
+## What's New
 
-- **Gaming Mode settings TUI** — a floating gum-based TUI launched from Walker (`Super+Space → "DeckShift Settings"`) for adjusting monitor, GPU, resolution, and refresh rate after install. No more hand-editing `gamescope-session-plus.conf`.
-- **NVIDIA driver branch auto-pick** — Pascal/Maxwell/Volta cards (GTX 9xx/10xx, Quadro P/M) get the legacy `nvidia-580xx-utils` driver automatically via Omarchy's `omarchy-hw-nvidia-gsp` helper. Modern Turing+ cards stay on `nvidia-utils`.
-- **Idempotent package installs** — uses Omarchy's `omarchy-pkg-add` everywhere, which double-checks pacman actually installed each package.
-- **Optional Xbox Bluetooth controller support** — opt-in step installs `xpadneo-dkms` for proper button mapping and rumble with wireless Xbox pads.
-- **Intel GPU support** — Intel-only systems (Iris Xe, Arc) are now supported. Older Gen8/9 (Skylake/Kaby Lake) gets a performance warning before continuing. The `NO DICE CHICAGO - INTEL DETECTED` block-out is gone.
-- **Multilib check removed** — Omarchy ships with multilib enabled.
+### v0.1.3 — power-state save/restore + reliable exit
+
+- **Saves your real pre-Gaming-Mode state** (CPU governor + power profile) on entry to `~/.cache/deckshift/saved-state` and restores those exact values on exit. No more guessing `powersave`/`balanced`.
+- **Synchronous restore in `switch-to-desktop`** — runs *before* SDDM is restarted, so the restore can't be SIGKILL'd mid-write by session teardown.
+- **`switch-to-desktop` now uses an atomic `systemctl restart sddm`** instead of a racy stop+disowned-start that could leave the display manager stopped (= black screen).
+- **`powerprofilesctl` is now in the NOPASSWD allowlist** so the restore call can succeed without a polkit auth agent.
+
+### v0.1.2 — TUI hardening + hybrid PRIME offload
+
+- **Hybrid GPU support in the Settings TUI.** Two new GPU modes:
+  - **`[hybrid-nvidia]`** — for laptops with NVIDIA dGPU + AMD/Intel iGPU where the laptop screen (`eDP-1`) is wired to the iGPU. Sets `__NV_PRIME_RENDER_OFFLOAD=1` + friends so Gamescope runs on the iGPU but games inside still render on the NVIDIA dGPU via PRIME render offload. Tested working on Acer Nitro (AMD APU + RTX 3050) playing Homeworld 3 with NVIDIA acceleration on the laptop screen.
+  - **`[hybrid-amd]`** — for AMD dGPU + AMD/Intel iGPU laptops. Asks which GPU is the dGPU, then sets `DRI_PRIME` + `MESA_VK_DEVICE_SELECT` so games offload to the AMD dGPU.
+- **Settings TUI no longer crashes on stale `OUTPUT_CONNECTOR`.** When the saved monitor is currently unplugged the TUI falls back gracefully instead of tripping `pipefail`.
+- **Installer no longer preselects monitor / resolution / refresh rate.** Display selection is now exclusively the TUI's job; the installer writes only GPU and static keys to `gamescope-session-plus.conf`.
+- **Conf writer is now per-key set/unset** (sed-based), idempotent — re-running the installer preserves user-set display values from the TUI instead of clobbering them.
+
+### v0.1.1 / v0.1.0 — original deckshift fork
+
+- Settings TUI launched from Walker (`Super+Space → "DeckShift Settings"`).
+- NVIDIA driver branch auto-pick (Pascal/Maxwell/Volta → `nvidia-580xx-utils`, Turing+ → `nvidia-utils`) via Omarchy's `omarchy-hw-nvidia-gsp`.
+- Idempotent package installs via `omarchy-pkg-add`.
+- Optional Xbox Bluetooth controller support (`xpadneo-dkms`, opt-in).
+- Intel GPU support (Iris Xe, Arc) with a generation warning for older Gen8/9.
+- Multilib check removed (Omarchy ships with multilib enabled).
 
 ## Settings TUI
 
 After install, launch `DeckShift Settings` from Walker (or run `deckshift-settings` directly) to change Gaming Mode display settings without editing config files:
 
 | Option | What it sets in `gamescope-session-plus.conf` |
-|--------|------------------------------------------------|
-| Monitor      | `OUTPUT_CONNECTOR` (auto-detected from connected DRM outputs) |
+|---|---|
+| Monitor      | `OUTPUT_CONNECTOR` (auto-detected from connected DRM outputs; pick or clear) |
 | Resolution   | `SCREEN_WIDTH` / `SCREEN_HEIGHT` (offers monitor's native modes + common presets) |
-| Refresh rate | `CUSTOM_REFRESH_RATES` (parsed from EDID, or common rates as fallback) |
-| GPU          | `VULKAN_ADAPTER` + `GBM_BACKEND` (NVIDIA) or `DRI_PRIME` (AMD) — useful on hybrid laptops |
+| Refresh rate | `CUSTOM_REFRESH_RATES` (parsed from EDID, plus common rates as fallback) |
+| GPU — direct           | `VULKAN_ADAPTER` + `GBM_BACKEND` (NVIDIA) or `DRI_PRIME` (AMD/Intel) — single-GPU desktops |
+| GPU — `[hybrid-nvidia]` | `__NV_PRIME_RENDER_OFFLOAD=1`, `__VK_LAYER_NV_optimus=NVIDIA_only`, `__GLX_VENDOR_LIBRARY_NAME=nvidia` — hybrid laptops with NVIDIA dGPU + iGPU-attached eDP |
+| GPU — `[hybrid-amd]`    | `DRI_PRIME=pci-…` + `MESA_VK_DEVICE_SELECT=<vendor:device>` + `MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=1` — hybrid laptops with AMD dGPU + iGPU |
+| (clear)                | Removes all GPU keys; gamescope auto-picks at runtime |
+
+The `[hybrid-*]` options only appear when the relevant GPU pair is detected.
 
 The TUI launches as a floating window via Omarchy's `TUI.float` pattern. Selections are **buffered** — nothing is written to disk until you pick **Save and exit**. **Cancel** discards unsaved changes. Saved changes apply next time you enter Gaming Mode (`Super+Shift+S`).
 
@@ -32,22 +55,22 @@ The TUI launches as a floating window via Omarchy's `TUI.float` pattern. Selecti
 
 This installer transforms your desktop into a dual-mode system:
 
-- **Desktop Mode** - Your normal Hyprland session
-- **Gaming Mode** - Full-screen Steam Big Picture running inside Gamescope (the same compositor used by the Steam Deck), with automatic performance tuning, controller support, and external drive mounting
+- **Desktop Mode** — your normal Hyprland session.
+- **Gaming Mode** — full-screen Steam Big Picture running inside Gamescope (the same compositor used by the Steam Deck), with automatic performance tuning, controller support, and external drive mounting.
 
-Switching between modes is seamless - SDDM handles session transitions, and all your network, audio, and peripherals carry over automatically.
+Switching between modes is seamless — SDDM handles session transitions, and your network, audio, and peripherals carry over automatically.
 
 ## Requirements
 
-- **OS**: [Omarchy](https://omarchy.com) (Arch Linux)
-- **GPU**: AMD (discrete or APU), NVIDIA (discrete), or Intel (Arc / Iris Xe)
+- **OS**: [Omarchy](https://omarchy.com) (Arch Linux + Hyprland + SDDM)
+- **GPU**: AMD (discrete or APU), NVIDIA (discrete), or Intel (Arc / Iris Xe), or any hybrid combo of the above
   - Intel Arc (Alchemist, Battlemage): well-supported
   - Tiger Lake / Alder Lake Iris Xe: playable for indies / older AAA
   - Older Gen8/9 Intel (Skylake, Kaby Lake): expect slow/glitchy — installer warns and asks before continuing
-  - Intel iGPU + AMD/NVIDIA dGPU configurations: dGPU is used for gaming
+  - Hybrid laptops (NVIDIA + iGPU, AMD dGPU + iGPU): use the corresponding `[hybrid-*]` GPU mode in the Settings TUI
 - **AUR Helper**: yay or paru (for ChimeraOS session packages)
 
-> **Note**: This script is designed specifically for Omarchy and its stack (Hyprland, SDDM, iwd, UWSM, PipeWire). It is not intended for other Arch installations or distributions.
+> **Note**: This script targets Omarchy and its stack (Hyprland, SDDM, iwd, UWSM, PipeWire). It works on other Arch + Hyprland setups with light tweaks, but isn't tested there.
 
 ## Quick Start
 
@@ -58,15 +81,24 @@ chmod +x deckshift.sh
 ./deckshift.sh
 ```
 
-The installer is fully interactive and will walk you through each step.
+The installer is fully interactive and walks you through each step.
+
+After install, open `DeckShift Settings` from Walker and pick:
+
+- A monitor
+- A resolution / refresh rate
+- A GPU mode — for hybrid laptops, prefer `[hybrid-nvidia]` or `[hybrid-amd]` over the direct options
+
+Save, then `Super+Shift+S` to launch Gaming Mode.
 
 ## Usage
 
-| Action | Keybind |
-|--------|---------|
+| Action | How |
+|---|---|
 | Enter Gaming Mode | `Super + Shift + S` |
-| Return to Desktop | `Super + Shift + R` |
-| Exit to Desktop (fallback) | Steam > Power > Exit to Desktop |
+| Return to Desktop | `Super + Shift + R` *(global keybind monitor catches it inside Gamescope)* |
+| Return to Desktop (alternative) | Steam → Power → **Switch to Desktop** |
+| Open settings | Walker → `DeckShift Settings`, or run `deckshift-settings` |
 
 ### Command-Line Options
 
@@ -76,6 +108,27 @@ The installer is fully interactive and will walk you through each step.
 ./deckshift.sh --version    # Show version
 ./deckshift.sh --help       # Show help
 ```
+
+## Recovery from a Black Screen
+
+If Gaming Mode (or anything else) leaves you on a black screen, here's the order of escalation:
+
+1. **`Super + Shift + R`** — the keybind monitor inside Gamescope still works on a black screen as long as the kernel is processing input.
+2. **Wait 10 seconds.** Sometimes the display is just renegotiating EDID after a session swap; give it a beat.
+3. **Switch to a TTY**: press `Ctrl + Alt + F2` (try `F3` / `F4` if F2 is blank). You'll get a text login prompt.
+4. Log in as your user, then run one of:
+   - **Cleanest** — log the graphical session out cleanly and bounce back to SDDM:
+     ```
+     loginctl terminate-user $USER
+     ```
+   - **Heavier** — restart the whole display manager:
+     ```
+     sudo systemctl restart sddm
+     ```
+5. **From SSH** (from another machine on the network) the same commands work — handy if the box is wedged but its network is alive.
+6. **Last resort:** hold the power button. Safe in this situation; you didn't cause the freeze, gamescope did.
+
+If you keep ending up on a black screen, see [Troubleshooting](#troubleshooting) — most often it's a GPU↔connector mismatch on hybrid laptops (e.g. NVIDIA mode targeting `eDP-1`, which on a hybrid is wired to the iGPU). Switch the GPU mode in DeckShift Settings to `[hybrid-nvidia]` and pick `eDP-1` for the monitor.
 
 ## What Gets Installed
 
@@ -91,7 +144,7 @@ The installer checks for and offers to install:
 - Fonts (`ttf-liberation`)
 
 **GPU-Specific Drivers**
-- **NVIDIA (Turing+ / GSP firmware — GTX 16xx, RTX 20-50xx, etc.)**: `nvidia-utils`, `lib32-nvidia-utils`, `nvidia-settings`, `libva-nvidia-driver`
+- **NVIDIA (Turing+ / GSP firmware — GTX 16xx, RTX 20–50xx, etc.)**: `nvidia-utils`, `lib32-nvidia-utils`, `nvidia-settings`, `libva-nvidia-driver`
 - **NVIDIA (legacy Maxwell/Pascal/Volta — GTX 9xx/10xx, Quadro P/M)**: `nvidia-580xx-utils`, `lib32-nvidia-580xx-utils`, `nvidia-settings`, `libva-nvidia-driver`
 - **AMD**: `vulkan-radeon`, `lib32-vulkan-radeon`, `libvdpau`, `lib32-libvdpau`
 - **Intel**: `vulkan-intel`, `lib32-vulkan-intel`, `intel-media-driver`
@@ -99,18 +152,19 @@ The installer checks for and offers to install:
 The correct NVIDIA driver branch is auto-selected via Omarchy's `omarchy-hw-nvidia-gsp` / `omarchy-hw-nvidia-without-gsp` helpers — no manual override needed. Intel-only systems get a generation warning + Y/N prompt before continuing (Skylake/Kaby Lake era is slow; Tiger Lake / Arc is fine).
 
 **AUR Packages** (via yay/paru)
-- `gamescope-session-git` - ChimeraOS base session framework
-- `gamescope-session-steam-git` - ChimeraOS Steam session with compatibility scripts
+- `gamescope-session-git` — ChimeraOS base session framework
+- `gamescope-session-steam-git` — ChimeraOS Steam session with compatibility scripts
 - `proton-ge-custom-bin` (optional)
 
 **Other Requirements**
-- `python-evdev` - For the keyboard shortcut monitor
-- `ntfs-3g` - For mounting NTFS game drives
-- `udisks2` - For external drive auto-mounting
+- `python-evdev` — for the keyboard shortcut monitor
+- `gum`, `jq` — for the Settings TUI
+- `ntfs-3g` — for mounting NTFS game drives
+- `udisks2` — for external drive auto-mounting
 - `xcb-util-cursor`, `libcap`, `curl`, `pciutils`
 
 **Optional: Xbox Bluetooth Controllers**
-- `xpadneo-dkms`, `linux-headers` - Wireless Xbox pad button mapping & rumble for Big Picture / RetroArch (wired pads work without this)
+- `xpadneo-dkms`, `linux-headers` — wireless Xbox pad button mapping & rumble for Big Picture / RetroArch (wired pads work without this)
 - Prompted opt-in during install; pair with `Super+Ctrl+B`
 
 Package installs use Omarchy's `omarchy-pkg-add` (idempotent, double-checks pacman actually installed each package).
@@ -119,61 +173,62 @@ Package installs use Omarchy's `omarchy-pkg-add` (idempotent, double-checks pacm
 
 #### Session Scripts
 | Path | Purpose |
-|------|---------|
-| `/usr/local/bin/switch-to-gaming` | Switches from Hyprland to Gaming Mode |
-| `/usr/local/bin/switch-to-desktop` | Switches from Gaming Mode back to Hyprland |
-| `/usr/local/bin/gamescope-session-nm-wrapper` | Main session wrapper (performance mode, NM, drive mounting) |
-| `/usr/local/bin/gaming-session-switch` | Helper to toggle SDDM session config between modes |
-| `/usr/local/bin/gaming-keybind-monitor` | Python daemon monitoring `Super+Shift+R` in Gaming Mode |
+|---|---|
+| `/usr/local/bin/switch-to-gaming` | Hyprland → Gaming Mode |
+| `/usr/local/bin/switch-to-desktop` | Gaming Mode → Hyprland (synchronous power-state restore + atomic SDDM restart) |
+| `/usr/local/bin/gamescope-session-nm-wrapper` | Main session wrapper (performance mode, NM, drive mounting, saves pre-Gaming-Mode state) |
+| `/usr/local/bin/gaming-session-switch` | Helper that toggles SDDM autologin between Hyprland and Gamescope |
+| `/usr/local/bin/gaming-keybind-monitor` | Python evdev daemon catching `Super+Shift+R` inside Gamescope |
 | `/usr/lib/os-session-select` | Handler for Steam's "Exit to Desktop" button |
-| `/usr/local/lib/gamescope-nvidia/gamescope` | NVIDIA wrapper adding `--force-composition` flag |
+| `/usr/local/lib/gamescope-nvidia/gamescope` | NVIDIA wrapper that adds `--force-composition` |
 
 #### NetworkManager Integration
 | Path | Purpose |
-|------|---------|
+|---|---|
 | `/usr/local/bin/gamescope-nm-start` | Starts NetworkManager on gaming session entry |
 | `/usr/local/bin/gamescope-nm-stop` | Stops NetworkManager and restores iwd on session exit |
-| `/etc/NetworkManager/conf.d/10-iwd-backend.conf` | Configures NM to use iwd backend (if iwd detected) |
-| `/etc/NetworkManager/conf.d/20-unmanaged-systemd.conf` | Prevents NM/systemd-networkd conflicts (if networkd detected) |
+| `/etc/NetworkManager/conf.d/10-iwd-backend.conf` | Configures NM to use iwd backend (if iwd is detected) |
+| `/etc/NetworkManager/conf.d/20-unmanaged-systemd.conf` | Prevents NM/systemd-networkd conflicts (if networkd is detected) |
 
 #### External Drive Support
 | Path | Purpose |
-|------|---------|
+|---|---|
 | `/usr/local/bin/steam-library-mount` | Auto-detects and mounts drives with Steam libraries |
 
 #### Session & Display Manager
 | Path | Purpose |
-|------|---------|
+|---|---|
 | `/usr/share/wayland-sessions/gamescope-session-steam-nm.desktop` | SDDM session entry for Gaming Mode |
 | `/etc/sddm.conf.d/zz-gaming-session.conf` | SDDM autologin session switching config |
 
 #### Permissions & Security
 | Path | Purpose |
-|------|---------|
-| `/etc/sudoers.d/gaming-session-switch` | Passwordless sudo for session switching, NM, bluetooth |
-| `/etc/sudoers.d/gaming-mode-sysctl` | Passwordless sudo for performance sysctl tuning |
+|---|---|
+| `/etc/sudoers.d/gaming-session-switch` | NOPASSWD: session switching, NM, bluetooth, `powerprofilesctl set *` |
+| `/etc/sudoers.d/gaming-mode-sysctl` | NOPASSWD: performance sysctl tuning |
 | `/etc/polkit-1/rules.d/50-gamescope-networkmanager.rules` | Polkit rules for NM D-Bus access |
 | `/etc/polkit-1/rules.d/50-udisks-gaming.rules` | Polkit rules for external drive mounting |
 | `/etc/udev/rules.d/99-gaming-performance.rules` | Udev rules for CPU/GPU performance control |
-| `/etc/security/limits.d/99-gaming-memlock.conf` | Memory lock limits (2GB) for gaming |
+| `/etc/security/limits.d/99-gaming-memlock.conf` | Memory lock limits (2 GB) for gaming |
 
 #### Performance & Environment
 | Path | Purpose |
-|------|---------|
-| `/etc/environment.d/99-shader-cache.conf` | Shader cache optimization (12GB Mesa/DXVK cache) |
+|---|---|
+| `/etc/environment.d/99-shader-cache.conf` | Shader cache optimisation (12 GB Mesa/DXVK cache) |
 | `/etc/environment.d/90-nvidia-gamescope.conf` | NVIDIA Gamescope environment variables |
 | `/etc/pipewire/pipewire.conf.d/10-gaming-latency.conf` | PipeWire low-latency audio config |
 
 #### User Config
 | Path | Purpose |
-|------|---------|
-| `~/.config/environment.d/gamescope-session-plus.conf` | Gamescope session config (resolution, refresh rate, GPU) — edit via the settings TUI |
+|---|---|
+| `~/.config/environment.d/gamescope-session-plus.conf` | Gamescope session config (display + GPU keys) — managed via the Settings TUI |
 | `~/.config/hypr/bindings.conf` | Hyprland keybind for `Super+Shift+S` (appended) |
+| `~/.cache/deckshift/saved-state` | Pre-Gaming-Mode CPU governor + power profile (created on entry, cleaned up on exit) |
 
 #### Settings TUI
 | Path | Purpose |
-|------|---------|
-| `/usr/local/bin/deckshift-settings` | Gum-based TUI for adjusting Gaming Mode display settings |
+|---|---|
+| `/usr/local/bin/deckshift-settings` | Gum-based TUI for Gaming Mode display + GPU settings |
 | `/usr/share/applications/deckshift-settings.desktop` | Walker launcher (floats via Omarchy's `TUI.float` windowrule) |
 
 ## How It Works
@@ -192,59 +247,60 @@ Desktop Mode (Hyprland)
 Gaming Mode (Gamescope + Steam Big Picture)
     │
     ├─ On session start (gamescope-session-nm-wrapper):
-    │   ├─ Enables performance mode (CPU governor, GPU tuning)
+    │   ├─ Saves current CPU governor + power profile to ~/.cache/deckshift/saved-state
+    │   ├─ Enables performance mode (CPU governor → performance, GPU max power, PPD → performance)
     │   ├─ Starts NetworkManager (for Steam network access)
     │   ├─ Launches steam-library-mount (external drive detection)
     │   ├─ Starts gaming-keybind-monitor (Super+Shift+R listener)
     │   └─ Launches gamescope-session-plus with Steam
     │
-    ├─ Super+Shift+R pressed (or Steam > Exit to Desktop)
+    ├─ Super+Shift+R pressed (or Steam → Power → Switch to Desktop)
     │   └─ switch-to-desktop runs:
+    │       ├─ Reads ~/.cache/deckshift/saved-state and restores CPU governor + PPD synchronously
     │       ├─ Unmasks suspend targets
     │       ├─ Restores Bluetooth
     │       ├─ Shuts down Steam gracefully
     │       ├─ Kills gamescope
     │       ├─ Updates SDDM config to Hyprland session
-    │       └─ Restarts SDDM → boots into Desktop Mode
+    │       └─ Atomic systemctl restart sddm → boots into Desktop Mode
     │
-    └─ On session cleanup (trap handler):
+    └─ On session cleanup (trap handler — backup path):
         ├─ Kills steam-library-mount and keybind-monitor
         ├─ Stops NetworkManager, restores iwd WiFi
-        └─ Restores balanced power mode
+        └─ Re-applies saved CPU governor + power profile (idempotent if switch-to-desktop already ran)
 ```
 
 ### Performance Mode
 
-When Gaming Mode starts, the session wrapper automatically:
+When Gaming Mode starts, the session wrapper saves your current CPU governor and power-profiles-daemon profile to `~/.cache/deckshift/saved-state`, then:
 
 - Sets CPU governor to `performance` on all cores
-- **NVIDIA**: Enables persistence mode, sets power limit to maximum, disables runtime suspend
-- **AMD**: Sets GPU to high performance via `power_dpm_force_performance_level`
-- Applies kernel sysctl tuning (scheduler, VM, inotify, network buffers)
-- Sets power profile to `performance` (if power-profiles-daemon is available)
+- **NVIDIA**: enables persistence mode, sets power limit to maximum, disables runtime suspend
+- **AMD**: sets GPU to high performance via `power_dpm_force_performance_level`
+- Sets the power profile to `performance` (when `power-profiles-daemon` is available)
 
-On exit, everything is restored to balanced/powersave defaults.
+On exit, both `switch-to-desktop` (synchronous, runs first) and the wrapper's trap (backup) read the saved file and restore the **exact** values that were set before Gaming Mode.
+
+> **Caveat — Omarchy + AC**: Omarchy's `omarchy-powerprofiles-init` autostarts on every Hyprland session and sets the power profile to `performance` whenever the laptop is on AC. So even after a perfect deckshift restore, the next Hyprland session will reset to `performance` if you're plugged in. This is Omarchy's intended behaviour, not a deckshift bug — it'd happen to any program that tries to set `balanced` and then a Hyprland session restarts. To opt out, comment `exec-once = omarchy-powerprofiles-init` in `~/.config/hypr/autostart.conf`. On battery the deckshift restore lands at the saved value and stays there.
 
 ### GPU Detection
 
-The installer automatically detects your GPU configuration:
+The installer detects:
 
-- **AMD dGPU**: Detected via PCI device names (Navi, RDNA, Vega discrete cards)
-- **AMD APU**: Detected via integrated GPU codenames (Phoenix, Rembrandt, Van Gogh, etc.)
-- **NVIDIA**: Detected via lspci, configures `nvidia-drm.modeset=1` if missing. Driver branch (modern vs legacy 580xx) auto-selected via Omarchy's GSP-firmware detection — older Pascal/Maxwell cards get `nvidia-580xx-utils` automatically.
-- **Intel (Arc / Iris Xe / iGPU)**: Detected via `i915` / `xe` kernel drivers. Used as primary on Intel-only systems. The gamescope conf for Intel skips `ADAPTIVE_SYNC` and `ENABLE_GAMESCOPE_HDR` by default — most Intel iGPUs don't support adaptive sync, and gamescope HDR on Intel is unreliable. Users with Intel Arc + a VRR display can enable both via the settings TUI.
-- **Multi-GPU**: Correctly identifies discrete vs integrated, selects dGPU for gaming. Intel iGPU + AMD/NVIDIA dGPU systems use the dGPU.
+- **AMD dGPU**: PCI device names (Navi, RDNA, Vega discrete cards)
+- **AMD APU**: integrated GPU codenames (Phoenix, Rembrandt, Van Gogh, etc.)
+- **NVIDIA**: lspci, configures `nvidia-drm.modeset=1` if missing, picks `nvidia-utils` vs `nvidia-580xx-utils` via Omarchy's GSP-firmware detection
+- **Intel (Arc / Iris Xe / iGPU)**: `i915` / `xe` kernel drivers
+- **Hybrid combinations**: detected by the Settings TUI, which surfaces the appropriate `[hybrid-*]` GPU mode
 
-### Monitor Detection
-
-The installer scans DRM connectors on your gaming GPU to find connected displays. If multiple monitors are connected to the dGPU, you can choose which one to use for Gaming Mode. Resolution and refresh rate are auto-detected from EDID data.
+The installer itself no longer picks a monitor / resolution / refresh / GPU — those are user choices, made via the Settings TUI after install.
 
 ### NetworkManager Integration
 
 Many systems running Hyprland use `iwd` or `systemd-networkd` instead of NetworkManager. Since Steam requires NetworkManager for its network settings UI, the installer creates a managed handoff:
 
-1. On Gaming Mode entry: NetworkManager starts, takes over networking
-2. On Gaming Mode exit: NetworkManager stops, iwd/networkd resumes
+1. On Gaming Mode entry: NetworkManager starts, takes over networking.
+2. On Gaming Mode exit: NetworkManager stops, iwd/networkd resumes.
 
 This avoids conflicts and ensures both desktop and gaming sessions have network access.
 
@@ -252,10 +308,10 @@ This avoids conflicts and ensures both desktop and gaming sessions have network 
 
 The `steam-library-mount` daemon runs during Gaming Mode and:
 
-1. Scans all connected drives for Steam library folders
-2. Mounts drives containing `steamapps/` directories via udisks2
-3. Monitors udev for hot-plugged drives
-4. Unmounts non-Steam drives to avoid clutter
+1. Scans all connected drives for Steam library folders.
+2. Mounts drives containing `steamapps/` directories via udisks2.
+3. Monitors udev for hot-plugged drives.
+4. Unmounts non-Steam drives to avoid clutter.
 
 Supports ext4, NTFS, btrfs, xfs, exfat, f2fs, and vfat filesystems.
 
@@ -271,22 +327,26 @@ PERFORMANCE_MODE=enabled   # Set to "disabled" to skip performance tuning
 
 ### Gamescope Session Config
 
-After installation, you can edit `~/.config/environment.d/gamescope-session-plus.conf`:
+The installer **only** writes GPU + static keys to `~/.config/environment.d/gamescope-session-plus.conf`:
 
 ```bash
-SCREEN_WIDTH=2560
-SCREEN_HEIGHT=1440
-CUSTOM_REFRESH_RATES=165
-OUTPUT_CONNECTOR=DP-1
-ADAPTIVE_SYNC=1            # AMD only
-ENABLE_GAMESCOPE_HDR=1     # AMD only
+# Static — every install:
+STEAM_ALLOW_DRIVE_UNMOUNT=1
+FCITX_NO_WAYLAND_DIAGNOSE=1
+SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+
+# GPU-specific (NVIDIA shown):
+VULKAN_ADAPTER=10de:25ac
+GBM_BACKEND=nvidia-drm
 ```
 
-**NVIDIA note**: Resolution is capped at 2560x1440 due to Gamescope limitations with NVIDIA GPUs.
+Display keys (`SCREEN_WIDTH`, `SCREEN_HEIGHT`, `CUSTOM_REFRESH_RATES`, `OUTPUT_CONNECTOR`) and hybrid-PRIME env vars are **owned exclusively by the Settings TUI**. Re-running the installer preserves your TUI choices.
+
+**NVIDIA note**: Gamescope on NVIDIA is currently capped at 2560×1440. The TUI flags any higher resolution as unsupported.
 
 ### Shader Cache
 
-The installer configures a 12GB shader cache by default in `/etc/environment.d/99-shader-cache.conf`. This reduces stutter in games by caching compiled shaders. Values can be adjusted:
+The installer configures a 12 GB shader cache by default in `/etc/environment.d/99-shader-cache.conf`:
 
 ```bash
 MESA_SHADER_CACHE_MAX_SIZE=12G
@@ -297,18 +357,24 @@ DXVK_STATE_CACHE=1
 ## NVIDIA-Specific Notes
 
 - **Kernel parameter**: `nvidia-drm.modeset=1` is required. The installer can configure this for Limine, GRUB, or systemd-boot.
-- **Resolution cap**: Gamescope on NVIDIA is limited to 2560x1440 maximum.
-- **Force composition**: The NVIDIA wrapper automatically adds `--force-composition` if supported by your Gamescope version.
+- **Resolution cap**: Gamescope on NVIDIA is limited to 2560×1440 maximum.
+- **Force composition**: the NVIDIA wrapper automatically adds `--force-composition` if your Gamescope version supports it.
 - **Environment**: `GBM_BACKEND=nvidia-drm` and related vars are set automatically.
-- **Persistence mode**: Enabled during gaming to keep the GPU initialized, disabled on exit.
+- **Persistence mode**: enabled during gaming, disabled on exit.
+
+### Hybrid laptop note
+
+On a hybrid laptop (NVIDIA dGPU + AMD/Intel iGPU), the laptop screen (`eDP-1`) is wired to the iGPU. NVIDIA cannot scan out directly to it — pointing the direct `[nvidia]` mode at `eDP-1` will black-screen.
+
+Use **`[hybrid-nvidia]`** in the Settings TUI instead. Gamescope will run on the iGPU (which owns `eDP-1`) and games inside will render on NVIDIA via PRIME render offload, with the rendered frames flowing back through DMA-BUF for scanout. This is the same architecture Steam Deck uses (just with one GPU).
 
 ## Bootloader Support
 
 The installer can automatically configure `nvidia-drm.modeset=1` for:
 
-- **Limine** - Appends to `cmdline:` in `/boot/limine.conf`
-- **GRUB** - Adds to `GRUB_CMDLINE_LINUX_DEFAULT` and regenerates config
-- **systemd-boot** - Provides manual instructions for `/boot/loader/entries/*.conf`
+- **Limine** — appends to `cmdline:` in `/boot/limine.conf`
+- **GRUB** — adds to `GRUB_CMDLINE_LINUX_DEFAULT` and regenerates config
+- **systemd-boot** — provides manual instructions for `/boot/loader/entries/*.conf`
 
 A backup is created before any bootloader modification.
 
@@ -324,39 +390,58 @@ Run the built-in verification to check all files, permissions, packages, and ser
 
 ### Common Issues
 
-**Gaming Mode doesn't start / black screen**
+**Gaming Mode shows a black screen on `eDP-1`**
+
+Most likely a hybrid-laptop GPU↔connector mismatch — NVIDIA can't drive the iGPU's display.
+
+- Switch the GPU mode to **`[hybrid-nvidia]`** (or `[hybrid-amd]` for AMD-only hybrids) in DeckShift Settings.
+- If you only have the laptop screen, that's the only working path — direct NVIDIA mode requires an external display plugged into the dGPU's HDMI/DP output.
+
+See [Recovery from a Black Screen](#recovery-from-a-black-screen) for how to get out of the black-screen state.
+
+**Gaming Mode doesn't start**
+
 - Check NVIDIA kernel params: `cat /proc/cmdline | grep nvidia`
 - Verify gamescope works: `gamescope -- steam`
 - Check session logs: `journalctl --user -u gamescope-session -n 50`
 
 **No network in Gaming Mode**
+
 - Test NM manually: `sudo systemctl start NetworkManager && nmcli general`
 - Check polkit rules: `ls -la /etc/polkit-1/rules.d/50-gamescope-*`
 - Check logs: `journalctl -t gamescope-nm -n 20`
 
 **Super+Shift+R doesn't work in Gaming Mode**
+
 - Ensure `python-evdev` is installed: `pacman -Qi python-evdev`
 - Ensure user is in `input` group: `groups | grep input`
-- Check keybind monitor: `journalctl -t gaming-keybind-monitor -n 20`
-- Fallback: Use Steam > Power > Exit to Desktop
+- Check the keybind monitor: `journalctl -t gaming-keybind-monitor -n 20`
+- Fallback: Steam → Power → **Switch to Desktop**
 
 **External drives not mounting**
+
 - Ensure `udisks2` is installed: `pacman -Qi udisks2`
 - Check polkit rules exist: `ls /etc/polkit-1/rules.d/50-udisks-gaming.rules`
 - Check mount logs: `journalctl -t steam-library-mount -n 20`
 
 **Audio stuttering in Gaming Mode**
+
 - Check PipeWire config exists: `cat /etc/pipewire/pipewire.conf.d/10-gaming-latency.conf`
 - Try lower quantum: edit the config and set `default.clock.min-quantum = 128`
 
+**Power profile stays on `performance` after Gaming Mode exit**
+
+If you're on AC and using Omarchy, this is expected — see the *Performance Mode* caveat above. The deckshift restore is correctly running; Omarchy's session-init policy is overriding it on the next Hyprland start.
+
 **Intel-only system, Gaming Mode is laggy**
-- Older Gen8/9 Intel iGPUs (Skylake, Kaby Lake) struggle with Vulkan workloads. Lower the launch resolution via the settings TUI (`deckshift-settings`) — 720p / 1080p makes a big difference.
+
+- Older Gen8/9 Intel iGPUs (Skylake, Kaby Lake) struggle with Vulkan workloads. Lower the launch resolution via the Settings TUI (`deckshift-settings`) — 720p / 1080p makes a big difference.
 - If you have a discrete GPU that should take over, check its driver is loaded: `lspci -k | grep -A2 VGA`
 
 ### Log Locations
 
 | Component | Command |
-|-----------|---------|
+|---|---|
 | Gaming session | `journalctl --user -u gamescope-session` |
 | NetworkManager | `journalctl -t gamescope-nm` |
 | Drive mounting | `journalctl -t steam-library-mount` |
@@ -366,23 +451,25 @@ Run the built-in verification to check all files, permissions, packages, and ser
 
 ## Uninstalling
 
-To remove Gaming Mode, delete the files listed in the [Files Created](#files-created) section. Key cleanup:
+To completely remove DeckShift:
 
 ```bash
+# Stop any running gaming-mode bits
+sudo pkill -f gamescope
+sudo pkill -f gaming-keybind-monitor
+sudo pkill -f steam-library-mount
+
 # Remove scripts
-sudo rm -f /usr/local/bin/switch-to-gaming
-sudo rm -f /usr/local/bin/switch-to-desktop
-sudo rm -f /usr/local/bin/gamescope-session-nm-wrapper
-sudo rm -f /usr/local/bin/gaming-session-switch
-sudo rm -f /usr/local/bin/gaming-keybind-monitor
-sudo rm -f /usr/local/bin/gamescope-nm-start
-sudo rm -f /usr/local/bin/gamescope-nm-stop
-sudo rm -f /usr/local/bin/steam-library-mount
+sudo rm -f /usr/local/bin/{switch-to-gaming,switch-to-desktop,gamescope-session-nm-wrapper,\
+gaming-session-switch,gaming-keybind-monitor,gamescope-nm-start,gamescope-nm-stop,\
+steam-library-mount,deckshift-settings}
 sudo rm -f /usr/lib/os-session-select
 sudo rm -rf /usr/local/lib/gamescope-nvidia
 
-# Remove session entry
+# Remove SDDM session entry
 sudo rm -f /usr/share/wayland-sessions/gamescope-session-steam-nm.desktop
+sudo rm -f /usr/share/wayland-sessions/gamescope-session-steam.desktop
+sudo rm -f /usr/share/wayland-sessions/gamescope-session.desktop
 
 # Remove permissions
 sudo rm -f /etc/sudoers.d/gaming-session-switch
@@ -399,10 +486,18 @@ sudo rm -f /etc/environment.d/90-nvidia-gamescope.conf
 sudo rm -f /etc/pipewire/pipewire.conf.d/10-gaming-latency.conf
 sudo rm -f /etc/NetworkManager/conf.d/10-iwd-backend.conf
 sudo rm -f /etc/NetworkManager/conf.d/20-unmanaged-systemd.conf
-rm -f ~/.config/environment.d/gamescope-session-plus.conf
 
-# Remove keybind from Hyprland (edit manually)
-# Remove the "bindd = SUPER SHIFT, S, Gaming Mode..." line from ~/.config/hypr/bindings.conf
+# Remove user files
+rm -f ~/.config/environment.d/gamescope-session-plus.conf
+rm -rf ~/.cache/deckshift
+sudo rm -f /usr/share/applications/deckshift-settings.desktop
+
+# Strip the Hyprland keybind line
+sed -i '/switch-to-gaming/d' ~/.config/hypr/bindings.conf
+
+# Reload polkit/udev
+sudo systemctl restart polkit
+sudo udevadm control --reload-rules
 
 # Optionally remove AUR packages
 yay -Rns gamescope-session-git gamescope-session-steam-git
@@ -410,10 +505,10 @@ yay -Rns gamescope-session-git gamescope-session-steam-git
 
 ## Credits
 
-- [Omarchy](https://omarchy.com) - The Arch Linux distribution this was built for
-- [ChimeraOS](https://chimeraos.org/) - gamescope-session packages
-- [Valve](https://store.steampowered.com/) - Steam, Gamescope, and the Steam Deck inspiration
-- [Hyprland](https://hyprland.org/) - Wayland compositor
+- [Omarchy](https://omarchy.com) — the Arch Linux distribution this was built for
+- [ChimeraOS](https://chimeraos.org/) — gamescope-session packages
+- [Valve](https://store.steampowered.com/) — Steam, Gamescope, and the Steam Deck inspiration
+- [Hyprland](https://hyprland.org/) — Wayland compositor
 
 ## License
 
