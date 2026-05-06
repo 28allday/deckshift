@@ -1349,11 +1349,10 @@ setup_session_switching() {
   local user_home
   user_home=$(eval echo "~$current_user")
 
-  local monitor_width=1920
-  local monitor_height=1080
-  local monitor_refresh=60
-  local monitor_output=""
-
+  # GPU detection only — the installer no longer chooses a monitor, resolution
+  # or refresh rate. Those are user choices, made later via Walker → "DeckShift
+  # Settings". This avoids stale OUTPUT_CONNECTOR values when displays are
+  # unplugged and lets the user pick whatever fits their setup.
   local -a dgpu_monitors=()
   local dgpu_card=""
   local dgpu_type=""
@@ -1370,10 +1369,9 @@ setup_session_switching() {
       NEEDS_REBOOT=1
       return 1
     fi
-    # No dGPU - check for APU
+    # No dGPU - check for AMD APU as a viable Gaming Mode GPU
     local apu_card=""
-    local apu_monitors=()
-    local card_name driver_link driver conn_dir conn_name status resolution mode_file
+    local card_name driver_link driver
 
     for card_path in /sys/class/drm/card[0-9]*; do
       card_name=$(basename "$card_path")
@@ -1384,39 +1382,19 @@ setup_session_switching() {
 
       if [[ "$driver" == "amdgpu" ]] && is_amd_igpu_card "$card_path"; then
         apu_card="$card_name"
-        # Find monitors connected to APU
-        for connector in "$card_path"/"$card_name"-*/status; do
-          [[ -f "$connector" ]] || continue
-          conn_dir=$(dirname "$connector")
-          conn_name=$(basename "$conn_dir")
-          conn_name=${conn_name#card*-}
-          [[ "$conn_name" == Writeback* ]] && continue
-          status=$(cat "$connector" 2>/dev/null)
-          if [[ "$status" == "connected" ]]; then
-            resolution=""
-            mode_file="$conn_dir/modes"
-            [[ -f "$mode_file" ]] && [[ -s "$mode_file" ]] && resolution=$(head -1 "$mode_file" 2>/dev/null)
-            apu_monitors+=("$conn_name|$resolution")
-          fi
-        done
         break
       fi
     done
 
-    if [[ -n "$apu_card" && ${#apu_monitors[@]} -gt 0 ]]; then
+    if [[ -n "$apu_card" ]]; then
       echo ""
       info "No discrete GPU found, but detected AMD APU ($apu_card)"
-      echo ""
-      echo "  This system has an AMD APU which can run Gaming Mode."
-      echo "  Detected monitors: ${#apu_monitors[@]}"
       echo ""
       read -p "  Set up Gaming Mode for APU? [Y/n]: " -n 1 -r
       echo
       if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        # Use APU as the gaming GPU
         dgpu_card="$apu_card"
         dgpu_type="AMD APU"
-        dgpu_monitors=("${apu_monitors[@]}")
         info "Configuring Gaming Mode for AMD APU"
       else
         info "Skipping APU Gaming Mode setup"
@@ -1424,60 +1402,14 @@ setup_session_switching() {
       fi
     else
       err "No discrete GPU (dGPU) or AMD APU found!"
-      echo "  Gaming mode requires a supported GPU with a connected display."
+      echo "  Gaming mode requires a supported GPU."
       return 1
     fi
   fi
 
   info "Found $dgpu_type on $dgpu_card"
-
-  if [[ ${#dgpu_monitors[@]} -eq 0 ]]; then
-    err "No monitors connected to dGPU!"
-    echo ""
-    echo "  Gaming mode requires a monitor connected to the discrete GPU."
-    echo "  Please connect an external monitor to your dGPU port (HDMI/DP/USB-C)"
-    echo "  and re-run this installer."
-    echo ""
-    return 1
-  fi
-
-  if [[ ${#dgpu_monitors[@]} -eq 1 ]]; then
-    local entry="${dgpu_monitors[0]}"
-    monitor_output="${entry%%|*}"
-    local res="${entry##*|}"
-    if [[ -n "$res" ]]; then
-      monitor_width="${res%%x*}"
-      monitor_height="${res##*x}"
-      monitor_height="${monitor_height%%@*}"
-      [[ "$res" == *@* ]] && monitor_refresh="${res##*@}" && monitor_refresh="${monitor_refresh%%.*}"
-    fi
-  else
-    echo ""
-    echo "  Multiple monitors connected to $dgpu_type:"
-    local i=1
-    for entry in "${dgpu_monitors[@]}"; do
-      local name="${entry%%|*}"
-      local res="${entry##*|}"
-      echo "    $i) $name ${res:+($res)}"
-      ((i++))
-    done
-    echo ""
-    read -p "Select monitor for Gaming Mode [1-${#dgpu_monitors[@]}]: " selection
-    if [[ ! "$selection" =~ ^[0-9]+$ ]] || ((selection < 1 || selection > ${#dgpu_monitors[@]})); then
-      selection=1
-    fi
-    local entry="${dgpu_monitors[$((selection-1))]}"
-    monitor_output="${entry%%|*}"
-    local res="${entry##*|}"
-    if [[ -n "$res" ]]; then
-      monitor_width="${res%%x*}"
-      monitor_height="${res##*x}"
-      monitor_height="${monitor_height%%@*}"
-      [[ "$res" == *@* ]] && monitor_refresh="${res##*@}" && monitor_refresh="${monitor_refresh%%.*}"
-    fi
-  fi
-
-  info "Selected dGPU display: ${monitor_output} (${monitor_width}x${monitor_height}@${monitor_refresh}Hz)"
+  info "Display selection (monitor / resolution / refresh) is left to the user."
+  info "After install, launch Walker → 'DeckShift Settings' to configure."
 
   info "Checking for old custom session files to clean up..."
 
@@ -1923,83 +1855,72 @@ UDISKS_POLKIT
 
   # Gamescope Session Configuration
   #
-  # This config file tells gamescope-session-plus (from ChimeraOS) how to
-  # set up the gaming display. It includes:
-  #   - Resolution and refresh rate (auto-detected from your monitor)
-  #   - Which display output to use (e.g. HDMI-1, DP-2)
-  #   - GPU-specific settings (NVIDIA vs AMD have different requirements)
+  # The installer writes only GPU-specific and static keys here. Display keys
+  # (SCREEN_WIDTH, SCREEN_HEIGHT, CUSTOM_REFRESH_RATES, OUTPUT_CONNECTOR) are
+  # NOT written by the installer — they are owned by the user and managed via
+  # the settings TUI (Walker → "DeckShift Settings"). This keeps existing user
+  # selections intact across re-runs and avoids preselecting values that may
+  # not match the user's setup.
   #
-  # NVIDIA gets: GBM_BACKEND=nvidia-drm, VULKAN_ADAPTER pointing to the GPU
-  # AMD gets: ADAPTIVE_SYNC=1 (FreeSync), ENABLE_GAMESCOPE_HDR=1 (HDR support)
-  #
-  # NVIDIA is capped at 2560x1440 due to Gamescope limitations with NVIDIA GPUs.
-  info "Creating gamescope-session-plus configuration..."
+  # NVIDIA gets: VULKAN_ADAPTER + GBM_BACKEND=nvidia-drm
+  # AMD gets:    ADAPTIVE_SYNC=1 + ENABLE_GAMESCOPE_HDR=1
+  # Intel:       no extra display flags (adaptive sync / HDR unreliable on Intel)
+  info "Updating gamescope-session-plus configuration..."
   local env_dir="${user_home}/.config/environment.d"
   local gamescope_conf="${env_dir}/gamescope-session-plus.conf"
 
   mkdir -p "$env_dir"
+  touch "$gamescope_conf"
 
-  local output_connector=""
-  [[ -n "$monitor_output" ]] && output_connector="OUTPUT_CONNECTOR=$monitor_output"
-
-  local nvidia_device_id=""
-  if [[ "$dgpu_type" == "NVIDIA" ]]; then
-    nvidia_device_id=$(/usr/bin/lspci -nn | grep -i nvidia | grep -oP '\[10de:\K[0-9a-fA-F]+' | head -1)
-    if [ "$monitor_width" -gt 2560 ]; then
-      monitor_width=2560
+  # Per-key updater — replaces in place if present, appends if missing.
+  # Same shape as the TUI's flush_pending so the two never fight.
+  set_conf_key() {
+    local key="$1" value="$2"
+    if grep -qE "^${key}=" "$gamescope_conf"; then
+      sed -i "s|^${key}=.*|${key}=${value}|" "$gamescope_conf"
+    else
+      echo "${key}=${value}" >> "$gamescope_conf"
     fi
-    if [ "$monitor_height" -gt 1440 ]; then
-      monitor_height=1440
-    fi
-  fi
+  }
+  unset_conf_key() {
+    sed -i "/^$1=/d" "$gamescope_conf"
+  }
 
+  # Static keys — apply on every install, every GPU.
+  set_conf_key STEAM_ALLOW_DRIVE_UNMOUNT 1
+  set_conf_key FCITX_NO_WAYLAND_DIAGNOSE 1
+  set_conf_key SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS 0
+
+  # GPU-specific keys — set the right ones, clear stale ones from a prior
+  # install on a different GPU (e.g. user swapped NVIDIA → AMD).
   case "$dgpu_type" in
     "NVIDIA")
-      local vulkan_adapter=""
-      [[ -n "$nvidia_device_id" ]] && vulkan_adapter="VULKAN_ADAPTER=10de:${nvidia_device_id}"
-      cat > "$gamescope_conf" << GAMESCOPE_CONF
-SCREEN_WIDTH=${monitor_width}
-SCREEN_HEIGHT=${monitor_height}
-CUSTOM_REFRESH_RATES=${monitor_refresh}
-${output_connector}
-${vulkan_adapter}
-GBM_BACKEND=nvidia-drm
-STEAM_ALLOW_DRIVE_UNMOUNT=1
-FCITX_NO_WAYLAND_DIAGNOSE=1
-SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
-GAMESCOPE_CONF
+      local nvidia_device_id
+      nvidia_device_id=$(/usr/bin/lspci -nn | grep -i nvidia | grep -oP '\[10de:\K[0-9a-fA-F]+' | head -1)
+      [[ -n "$nvidia_device_id" ]] && set_conf_key VULKAN_ADAPTER "10de:${nvidia_device_id}"
+      set_conf_key GBM_BACKEND nvidia-drm
+      unset_conf_key ADAPTIVE_SYNC
+      unset_conf_key ENABLE_GAMESCOPE_HDR
+      unset_conf_key DRI_PRIME
       ;;
     "Intel")
-      # Intel doesn't get ADAPTIVE_SYNC / HDR by default — most Intel iGPUs
-      # don't support adaptive sync, and gamescope HDR on Intel is unreliable.
-      # Users with Intel Arc + a VRR display can enable both via the settings TUI.
-      cat > "$gamescope_conf" << GAMESCOPE_CONF
-SCREEN_WIDTH=${monitor_width}
-SCREEN_HEIGHT=${monitor_height}
-CUSTOM_REFRESH_RATES=${monitor_refresh}
-${output_connector}
-STEAM_ALLOW_DRIVE_UNMOUNT=1
-FCITX_NO_WAYLAND_DIAGNOSE=1
-SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
-GAMESCOPE_CONF
+      unset_conf_key VULKAN_ADAPTER
+      unset_conf_key GBM_BACKEND
+      unset_conf_key ADAPTIVE_SYNC
+      unset_conf_key ENABLE_GAMESCOPE_HDR
       ;;
     *)
       # AMD dGPU and AMD APU — adaptive sync (FreeSync) and HDR are well supported.
-      cat > "$gamescope_conf" << GAMESCOPE_CONF
-SCREEN_WIDTH=${monitor_width}
-SCREEN_HEIGHT=${monitor_height}
-CUSTOM_REFRESH_RATES=${monitor_refresh}
-${output_connector}
-ADAPTIVE_SYNC=1
-ENABLE_GAMESCOPE_HDR=1
-STEAM_ALLOW_DRIVE_UNMOUNT=1
-FCITX_NO_WAYLAND_DIAGNOSE=1
-SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
-GAMESCOPE_CONF
+      set_conf_key ADAPTIVE_SYNC 1
+      set_conf_key ENABLE_GAMESCOPE_HDR 1
+      unset_conf_key VULKAN_ADAPTER
+      unset_conf_key GBM_BACKEND
       ;;
   esac
 
-  info "Created $gamescope_conf"
+  unset -f set_conf_key unset_conf_key
+
+  info "Updated $gamescope_conf (display keys left for the TUI)"
 
   # NVIDIA Gamescope Wrapper
   #
@@ -2319,10 +2240,11 @@ sleep 2
 
 sudo -n chvt 2 2>/dev/null || true
 sleep 0.5
-sudo -n systemctl stop sddm 2>/dev/null || true
-sleep 1
-sudo -n systemctl start sddm &
-disown
+# Atomic restart — stop+start (with stop and start as separate sudo calls)
+# was unreliable: stop/start aren't NOPASSWD-allowed individually (only
+# `restart` is), and the disowned `start` could be killed by session teardown
+# before SDDM actually came back up, leaving the user on a black screen.
+sudo -n systemctl restart sddm
 exit 0
 SWITCH_DESKTOP
 

@@ -145,6 +145,13 @@ refresh_monitor_data() {
   fi
   HYPR_MODES=$(hyprctl monitors all -j 2>/dev/null \
     | jq -r --arg n "$target" '.[] | select(.name==$n) | .availableModes[]?')
+  # Configured connector might not currently be plugged in (e.g. external
+  # display unplugged). Bail out cleanly so the rest of the function doesn't
+  # run grep against empty input and trip pipefail under set -e.
+  if [[ -z "$HYPR_MODES" ]]; then
+    HYPR_NATIVE=""; HYPR_MAX_REFRESH=""
+    return
+  fi
   HYPR_NATIVE=$(echo "$HYPR_MODES" | head -1 | sed 's/@.*//')
   # Max refresh AT NATIVE resolution, rounded to integer Hz for display.
   # (Reporting the max across all modes would mislead — e.g. a 4K@60 panel
@@ -213,13 +220,30 @@ list_gpus() {
 # ------------------------------------------------------------------------------
 
 show_state() {
-  local connector width height refresh vk_adapter dri_prime
+  local connector width height refresh vk_adapter dri_prime prime_offload mesa_vk_select
   connector=$(effective OUTPUT_CONNECTOR)
   width=$(effective SCREEN_WIDTH)
   height=$(effective SCREEN_HEIGHT)
   refresh=$(effective CUSTOM_REFRESH_RATES)
   vk_adapter=$(effective VULKAN_ADAPTER)
   dri_prime=$(effective DRI_PRIME)
+  prime_offload=$(effective __NV_PRIME_RENDER_OFFLOAD)
+  mesa_vk_select=$(effective MESA_VK_DEVICE_SELECT)
+
+  # Single GPU-mode line — shows the active mode rather than half-empty rows,
+  # since the modes are mutually exclusive. AMD hybrid is identified by both
+  # DRI_PRIME and MESA_VK_DEVICE_SELECT being set (the TUI sets both together);
+  # plain DRI_PRIME without MESA_VK_DEVICE_SELECT is "AMD/Intel direct".
+  local gpu_mode="<auto>"
+  if [[ -n "$prime_offload" ]]; then
+    gpu_mode="Hybrid PRIME offload (NVIDIA via iGPU)"
+  elif [[ -n "$dri_prime" && -n "$mesa_vk_select" ]]; then
+    gpu_mode="Hybrid PRIME offload (AMD via iGPU → ${mesa_vk_select})"
+  elif [[ -n "$vk_adapter" ]]; then
+    gpu_mode="NVIDIA direct (${vk_adapter})"
+  elif [[ -n "$dri_prime" ]]; then
+    gpu_mode="AMD/Intel direct (${dri_prime})"
+  fi
 
   local pending_label=""
   has_pending_changes && pending_label=" $(gum style --foreground 214 '(unsaved changes)')"
@@ -235,8 +259,7 @@ Gaming Mode display settings${pending_label}:
   Monitor      : ${monitor_label}
   Resolution   : ${width:-?}x${height:-?}
   Refresh rate : ${refresh:-<auto>} Hz
-  GPU (NVIDIA) : ${vk_adapter:-<not set>}
-  GPU (AMD)    : ${dri_prime:-<not set>}
+  GPU mode     : ${gpu_mode}
 
 Config file : ${CONF}
 EOF
@@ -365,6 +388,23 @@ choose_refresh_rate() {
   pending_set CUSTOM_REFRESH_RATES "$rate"
 }
 
+# Keys this menu owns. Cleared at the start of every selection so switching
+# between modes never leaves stale flags behind.
+GPU_MODE_KEYS=(
+  VULKAN_ADAPTER GBM_BACKEND DRI_PRIME
+  __NV_PRIME_RENDER_OFFLOAD __VK_LAYER_NV_optimus __GLX_VENDOR_LIBRARY_NAME
+  MESA_VK_DEVICE_SELECT MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE
+)
+
+# Convert a PCI slot like "01:00.0" or "0000:c3:00.0" to the DRI_PRIME tag
+# format ("pci-0000_01_00_0"). Used by AMD/Intel paths.
+_pci_slot_to_dri_tag() {
+  local slot="$1"
+  local tag="pci-$(echo "$slot" | sed 's/[:.]/_/g')"
+  [[ "$tag" != pci-0000* ]] && tag="pci-0000_${tag#pci-}"
+  echo "$tag"
+}
+
 choose_gpu() {
   local choice
   mapfile -t gpus < <(list_gpus)
@@ -372,41 +412,105 @@ choose_gpu() {
     gum style --foreground 196 "No GPUs detected via lspci"
     return 1
   fi
+
+  # Hybrid detection. Two patterns:
+  #   - hybrid-nvidia: NVIDIA dGPU + (AMD or Intel) iGPU. eDP usually on iGPU.
+  #     Games offload to NVIDIA via __NV_PRIME_RENDER_OFFLOAD env vars.
+  #   - hybrid-amd: 2+ non-NVIDIA GPUs (AMD+AMD or AMD+Intel). User picks which
+  #     is the dGPU; games offload via DRI_PRIME + MESA_VK_DEVICE_SELECT.
+  local has_nvidia=false has_igpu=false
+  local non_nvidia_count=0
+  local entry slot vendor_dev kind label
+  for entry in "${gpus[@]}"; do
+    IFS='|' read -r slot vendor_dev kind label <<<"$entry"
+    case "$kind" in
+      nvidia) has_nvidia=true ;;
+      amd|intel|other)
+        has_igpu=true
+        non_nvidia_count=$((non_nvidia_count + 1))
+        ;;
+    esac
+  done
+  local hybrid_nvidia_available=false hybrid_amd_available=false
+  $has_nvidia && $has_igpu && hybrid_nvidia_available=true
+  (( non_nvidia_count >= 2 )) && hybrid_amd_available=true
+
   local -a labels=()
+  $hybrid_nvidia_available && labels+=("[hybrid-nvidia] NVIDIA render-offload via iGPU — for hybrid laptops (eDP on iGPU)")
+  $hybrid_amd_available && labels+=("[hybrid-amd] AMD/Intel render-offload — pick which GPU to offload games to")
   for entry in "${gpus[@]}"; do
     IFS='|' read -r slot vendor_dev kind label <<<"$entry"
     labels+=("[$kind] $label  ($vendor_dev @ $slot)")
   done
   labels+=("(clear GPU override — let system decide)")
+
   choice=$(printf '%s\n' "${labels[@]}" | gchoose --header "Select GPU for Gaming Mode")
   [[ -z "$choice" ]] && return 0
-  if [[ "$choice" == "(clear"* ]]; then
-    pending_unset VULKAN_ADAPTER
-    pending_unset DRI_PRIME
-    pending_unset GBM_BACKEND
-    return 0
-  fi
-  local idx=0 selected=""
-  for label in "${labels[@]}"; do
-    if [[ "$label" == "$choice" ]]; then
-      selected="${gpus[$idx]}"
+
+  # Wipe every GPU-mode key first; each branch sets only what it needs.
+  local k
+  for k in "${GPU_MODE_KEYS[@]}"; do pending_unset "$k"; done
+
+  case "$choice" in
+    "[hybrid-nvidia]"*)
+      pending_set __NV_PRIME_RENDER_OFFLOAD 1
+      pending_set __VK_LAYER_NV_optimus NVIDIA_only
+      pending_set __GLX_VENDOR_LIBRARY_NAME nvidia
+      return 0
+      ;;
+    "[hybrid-amd]"*)
+      # Sub-menu — pick which AMD/Intel GPU is the render target (dGPU).
+      local -a t_labels=() t_entries=()
+      for entry in "${gpus[@]}"; do
+        IFS='|' read -r slot vendor_dev kind label <<<"$entry"
+        case "$kind" in
+          amd|intel|other)
+            t_labels+=("[$kind] $label  ($vendor_dev @ $slot)")
+            t_entries+=("$entry")
+            ;;
+        esac
+      done
+      local t_choice t_entry=""
+      t_choice=$(printf '%s\n' "${t_labels[@]}" | gchoose --header "Pick dGPU (render target) — usually the discrete one")
+      [[ -z "$t_choice" ]] && return 0
+      local i
+      for ((i=0; i<${#t_labels[@]}; i++)); do
+        if [[ "${t_labels[$i]}" == "$t_choice" ]]; then
+          t_entry="${t_entries[$i]}"
+          break
+        fi
+      done
+      [[ -z "$t_entry" ]] && return 0
+      IFS='|' read -r slot vendor_dev kind label <<<"$t_entry"
+      pending_set DRI_PRIME "$(_pci_slot_to_dri_tag "$slot")"
+      pending_set MESA_VK_DEVICE_SELECT "$vendor_dev"
+      pending_set MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE 1
+      return 0
+      ;;
+    "(clear"*)
+      return 0
+      ;;
+  esac
+
+  # Direct GPU selection — match the chosen label back to its gpus[] entry.
+  local selected=""
+  for entry in "${gpus[@]}"; do
+    IFS='|' read -r slot vendor_dev kind label <<<"$entry"
+    if [[ "[$kind] $label  ($vendor_dev @ $slot)" == "$choice" ]]; then
+      selected="$entry"
       break
     fi
-    idx=$((idx + 1))
   done
+  [[ -z "$selected" ]] && return 0
+
   IFS='|' read -r slot vendor_dev kind label <<<"$selected"
   case "$kind" in
     nvidia)
       pending_set VULKAN_ADAPTER "$vendor_dev"
-      pending_set GBM_BACKEND "nvidia-drm"
-      pending_unset DRI_PRIME
+      pending_set GBM_BACKEND nvidia-drm
       ;;
     amd|intel|other)
-      local dri_tag="pci-$(echo "$slot" | sed 's/[:.]/_/g')"
-      [[ "$dri_tag" != pci-0000* ]] && dri_tag="pci-0000_${dri_tag#pci-}"
-      pending_set DRI_PRIME "$dri_tag"
-      pending_unset VULKAN_ADAPTER
-      pending_unset GBM_BACKEND
+      pending_set DRI_PRIME "$(_pci_slot_to_dri_tag "$slot")"
       ;;
   esac
 }
