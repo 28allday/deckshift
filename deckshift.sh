@@ -958,6 +958,7 @@ UDEV_RULES
 %video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w net.core.wmem_max=*
 %video ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi -pm *
 %video ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi -pl *
+%video ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl set *
 SUDOERS_PERF
 )
     local tee_exit=$?
@@ -1971,31 +1972,40 @@ NVIDIA_WRAPPER
 #!/bin/bash
 log() { logger -t gamescope-wrapper "$*"; echo "$*"; }
 
+SAVED_STATE_FILE="$HOME/.cache/deckshift/saved-state"
+
+# Capture the user's actual pre-Gaming-Mode CPU governor + power profile so we
+# can restore those exact values on exit, instead of guessing "powersave/balanced"
+# (which was wrong on systems whose default is schedutil or power-saver).
+save_pre_gaming_state() {
+    mkdir -p "$(dirname "$SAVED_STATE_FILE")"
+    {
+        echo "PRE_GAMING_CPU_GOVERNOR=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
+        echo "PRE_GAMING_POWER_PROFILE=$(powerprofilesctl get 2>/dev/null)"
+    } > "$SAVED_STATE_FILE"
+    log "Saved pre-Gaming-Mode state to $SAVED_STATE_FILE"
+}
+
 enable_performance_mode() {
     log "Enabling performance mode..."
+    save_pre_gaming_state
 
     # Set CPU governor to performance
     for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo performance > "$gov" 2>/dev/null && log "CPU governor set to performance"
-        break  # Log only once
-    done
-    for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         echo performance > "$gov" 2>/dev/null
     done
+    log "CPU governor set to performance"
 
     # NVIDIA dGPU performance mode
     if command -v nvidia-smi &>/dev/null; then
-        # Enable persistence mode (keeps GPU initialized)
         sudo -n nvidia-smi -pm 1 2>/dev/null && log "NVIDIA persistence mode enabled"
 
-        # Set power limit to maximum
         local max_power
         max_power=$(nvidia-smi --query-gpu=power.max_limit --format=csv,noheader,nounits 2>/dev/null | head -1 | cut -d'.' -f1)
         if [[ -n "$max_power" && "$max_power" -gt 0 ]]; then
             sudo -n nvidia-smi -pl "$max_power" 2>/dev/null && log "NVIDIA power limit set to ${max_power}W"
         fi
 
-        # Prevent NVIDIA GPU runtime suspend
         for nvidia_pci in /sys/bus/pci/devices/*/power/control; do
             if [[ -f "${nvidia_pci%/power/control}/driver" ]]; then
                 local drv=$(basename "$(readlink -f "${nvidia_pci%/power/control}/driver")" 2>/dev/null)
@@ -2006,30 +2016,40 @@ enable_performance_mode() {
         done
     fi
 
-    # Set power profile to performance (if power-profiles-daemon is available)
+    # Set power profile to performance — sudo -n bypasses the polkit prompt
+    # (NOPASSWD allowed for `powerprofilesctl set *` in /etc/sudoers.d/gaming-session-switch)
     if command -v powerprofilesctl &>/dev/null; then
-        powerprofilesctl set performance 2>/dev/null && log "Power profile set to performance"
+        sudo -n powerprofilesctl set performance 2>/dev/null || \
+            powerprofilesctl set performance 2>/dev/null && log "Power profile set to performance"
     fi
 }
 
 restore_balanced_mode() {
-    log "Restoring balanced mode..."
+    log "Restoring pre-Gaming-Mode state..."
 
-    # Restore CPU governor to powersave/schedutil
+    # Read what the user's state actually was before Gaming Mode; fall back
+    # to safe defaults if the saved-state file is missing.
+    local saved_cpu_gov="" saved_pp=""
+    if [[ -f "$SAVED_STATE_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$SAVED_STATE_FILE"
+        saved_cpu_gov="${PRE_GAMING_CPU_GOVERNOR:-}"
+        saved_pp="${PRE_GAMING_POWER_PROFILE:-}"
+    fi
+
+    local target_gov="${saved_cpu_gov:-powersave}"
     for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo powersave > "$gov" 2>/dev/null
+        echo "$target_gov" > "$gov" 2>/dev/null
     done
 
     # NVIDIA dGPU restore
     if command -v nvidia-smi &>/dev/null; then
-        # Restore default power limit
         local default_power
         default_power=$(nvidia-smi --query-gpu=power.default_limit --format=csv,noheader,nounits 2>/dev/null | head -1 | cut -d'.' -f1)
         if [[ -n "$default_power" && "$default_power" -gt 0 ]]; then
             sudo -n nvidia-smi -pl "$default_power" 2>/dev/null
         fi
 
-        # Re-enable NVIDIA GPU runtime suspend (power saving)
         for nvidia_pci in /sys/bus/pci/devices/*/power/control; do
             if [[ -f "${nvidia_pci%/power/control}/driver" ]]; then
                 local drv=$(basename "$(readlink -f "${nvidia_pci%/power/control}/driver")" 2>/dev/null)
@@ -2039,16 +2059,18 @@ restore_balanced_mode() {
             fi
         done
 
-        # Disable persistence mode (allow GPU to sleep)
         sudo -n nvidia-smi -pm 0 2>/dev/null
     fi
 
-    # Restore power profile to balanced
+    # Restore power profile (saved value, or balanced fallback)
     if command -v powerprofilesctl &>/dev/null; then
-        powerprofilesctl set balanced 2>/dev/null
+        local target_pp="${saved_pp:-balanced}"
+        sudo -n powerprofilesctl set "$target_pp" 2>/dev/null || \
+            powerprofilesctl set "$target_pp" 2>/dev/null
     fi
 
-    log "Balanced mode restored"
+    rm -f "$SAVED_STATE_FILE"
+    log "Pre-Gaming-Mode state restored (governor=$target_gov profile=${saved_pp:-balanced})"
 }
 
 cleanup() {
@@ -2212,6 +2234,25 @@ if [[ ! -f /tmp/.gaming-session-active ]]; then
   exit 0
 fi
 rm -f /tmp/.gaming-session-active
+
+# SYNCHRONOUS POWER RESTORE — done first because the trap-based restore in
+# gamescope-session-nm-wrapper can be SIGKILL'd by `systemctl restart sddm`
+# before it completes, leaving CPU governor / power profile stuck at
+# "performance". Reading the saved-state file first guarantees the user's
+# pre-Gaming-Mode values are restored even if the wrapper's trap dies.
+SAVED_STATE_FILE="$HOME/.cache/deckshift/saved-state"
+if [[ -f "$SAVED_STATE_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$SAVED_STATE_FILE"
+  for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo "${PRE_GAMING_CPU_GOVERNOR:-powersave}" > "$gov" 2>/dev/null
+  done
+  if command -v powerprofilesctl &>/dev/null && [[ -n "${PRE_GAMING_POWER_PROFILE:-}" ]]; then
+    sudo -n powerprofilesctl set "$PRE_GAMING_POWER_PROFILE" 2>/dev/null || \
+      powerprofilesctl set "$PRE_GAMING_POWER_PROFILE" 2>/dev/null
+  fi
+  rm -f "$SAVED_STATE_FILE"
+fi
 
 sudo -n systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null
 sudo -n /usr/local/bin/gaming-session-switch desktop 2>/dev/null || true
