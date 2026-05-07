@@ -6,6 +6,8 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 
 > **Current status**: targets [Omarchy](https://omarchy.com) (Arch + Hyprland + SDDM + iwd). Works on other Arch + Hyprland setups with minor manual tweaks. Cross-distro support (Fedora / openSUSE / Cachy) is the next direction.
 
+[![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
+
 ## What's New
 
 ### v0.1.3 — power-state save/restore + reliable exit
