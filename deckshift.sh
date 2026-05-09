@@ -2254,7 +2254,14 @@ if [[ -f "$SAVED_STATE_FILE" ]]; then
   rm -f "$SAVED_STATE_FILE"
 fi
 
+# Unmask both /etc and /run masking symlinks (the gaming-mode mask uses
+# --runtime, which lives in /run; some systemd versions don't clear it via
+# plain `unmask`). Then daemon-reload so logind's CanSuspend cache refreshes
+# — without this, `systemctl suspend` returns "Access denied" via polkit even
+# though the masks are gone.
 sudo -n systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null
+sudo -n systemctl unmask --runtime sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null
+sudo -n systemctl daemon-reload 2>/dev/null
 sudo -n /usr/local/bin/gaming-session-switch desktop 2>/dev/null || true
 
 # Re-enable Bluetooth
@@ -2482,6 +2489,8 @@ SESSION_HELPER
 %video ALL=(ALL) NOPASSWD: /usr/bin/chvt
 %video ALL=(ALL) NOPASSWD: /usr/bin/systemctl mask --runtime sleep.target suspend.target hibernate.target hybrid-sleep.target
 %video ALL=(ALL) NOPASSWD: /usr/bin/systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
+%video ALL=(ALL) NOPASSWD: /usr/bin/systemctl unmask --runtime sleep.target suspend.target hibernate.target hybrid-sleep.target
+%video ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 %wheel ALL=(ALL) NOPASSWD: /usr/bin/systemctl start NetworkManager.service
 %wheel ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop NetworkManager.service
 %video ALL=(ALL) NOPASSWD: /usr/bin/systemctl start bluetooth.service
