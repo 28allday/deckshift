@@ -431,6 +431,27 @@ See [Recovery from a Black Screen](#recovery-from-a-black-screen) for how to get
 - Check PipeWire config exists: `cat /etc/pipewire/pipewire.conf.d/10-gaming-latency.conf`
 - Try lower quantum: edit the config and set `default.clock.min-quantum = 128`
 
+**Screen sharing in Chromium / Firefox is broken after returning from Gaming Mode (only "Share a tab" works)**
+
+`xdg-desktop-portal-hyprland` is bound to the killed Hyprland instance — tab capture works because it bypasses the portal, but desktop/window capture goes through it and fails silently.
+
+DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery` (autostarted from `~/.config/hypr/autostart.conf`). If you installed before this fix or the autostart hook didn't get added, run:
+
+```bash
+systemctl --user restart xdg-desktop-portal-hyprland xdg-desktop-portal pipewire pipewire-pulse wireplumber
+```
+
+then re-open the browser tab.
+
+**Suspend fails with "Access denied" after returning from Gaming Mode**
+
+The runtime mask on `suspend.target` from the gaming switch wasn't cleared. DeckShift now handles this in `switch-to-desktop`. For older installs, the one-time fix is:
+
+```bash
+sudo systemctl unmask --runtime sleep.target suspend.target hibernate.target hybrid-sleep.target
+sudo systemctl daemon-reload
+```
+
 **Power profile stays on `performance` after Gaming Mode exit**
 
 If you're on AC and using Omarchy, this is expected — see the *Performance Mode* caveat above. The deckshift restore is correctly running; Omarchy's session-init policy is overriding it on the next Hyprland start.

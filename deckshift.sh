@@ -2286,6 +2286,14 @@ fi
 
 sleep 2
 
+# Marker for the next Hyprland startup — tells deckshift-portal-recovery
+# that we're returning from Gaming Mode and the xdg-desktop-portal stack
+# needs a kick. Without this, Chromium/Firefox screen-sharing on Wayland
+# silently fails (only tab-sharing works) because the portal is still bound
+# to the killed Hyprland instance. /tmp survives SDDM restart; /run/user
+# does not (logind tears down the user manager).
+touch /tmp/.deckshift-just-returned 2>/dev/null || true
+
 sudo -n chvt 2 2>/dev/null || true
 sleep 0.5
 # Atomic restart — stop+start (with stop and start as separate sudo calls)
@@ -2401,6 +2409,61 @@ KEYBIND_MONITOR
 
   sudo chmod +x "$keybind_monitor"
   info "Created $keybind_monitor"
+
+  # Portal Recovery Helper — runs at every Hyprland startup
+  #
+  # When switch-to-desktop restarts SDDM, the new Hyprland instance gets a
+  # fresh HYPRLAND_INSTANCE_SIGNATURE, but xdg-desktop-portal-hyprland (and
+  # the pipewire stack) may still be bound to the old, dead instance. The
+  # symptom is Chromium/Firefox "Share desktop / window" failing silently on
+  # Google Meet etc. while "Share a tab" still works (because tab capture
+  # bypasses the portal entirely).
+  #
+  # switch-to-desktop drops /tmp/.deckshift-just-returned right before the
+  # SDDM restart. This helper, run as exec-once from Hyprland's autostart,
+  # checks for that marker on every Hyprland start, and if present, bounces
+  # the portal + pipewire user services so they reattach to the live HIS.
+  # No marker = no-op (cheap; runs in milliseconds).
+  info "Creating portal recovery helper..."
+  local portal_recovery="/usr/local/bin/deckshift-portal-recovery"
+
+  sudo tee "$portal_recovery" > /dev/null << 'PORTAL_RECOVERY'
+#!/bin/bash
+[[ -f /tmp/.deckshift-just-returned ]] || exit 0
+rm -f /tmp/.deckshift-just-returned
+
+# Give the new Hyprland a moment to fully come up and the user manager to
+# import HYPRLAND_INSTANCE_SIGNATURE / WAYLAND_DISPLAY into its environment.
+sleep 2
+
+systemctl --user restart \
+  xdg-desktop-portal-hyprland.service \
+  xdg-desktop-portal.service \
+  pipewire.service \
+  pipewire-pulse.service \
+  wireplumber.service 2>/dev/null || true
+PORTAL_RECOVERY
+
+  sudo chmod +x "$portal_recovery"
+  info "Created $portal_recovery"
+
+  # Hyprland autostart hook for portal recovery
+  local hypr_autostart="${user_home}/.config/hypr/autostart.conf"
+  if [[ -f "$hypr_autostart" ]]; then
+    if grep -q "deckshift-portal-recovery" "$hypr_autostart" 2>/dev/null; then
+      info "Portal recovery already wired into autostart.conf"
+    else
+      sudo -u "$current_user" tee -a "$hypr_autostart" > /dev/null << 'HYPR_PORTAL'
+
+# DeckShift — restart xdg-desktop-portal stack after returning from Gaming Mode
+exec-once = /usr/local/bin/deckshift-portal-recovery
+HYPR_PORTAL
+      info "Added portal recovery exec-once to $hypr_autostart"
+    fi
+  else
+    warn "autostart.conf not found at $hypr_autostart — portal recovery not auto-wired"
+    warn "Add manually: exec-once = /usr/local/bin/deckshift-portal-recovery"
+  fi
 
   # SDDM Session Switching Config
   #
@@ -2660,6 +2723,7 @@ verify_installation() {
     ["/usr/local/bin/switch-to-gaming"]="755:Hyprland to Gaming Mode switcher"
     ["/usr/local/bin/switch-to-desktop"]="755:Gaming Mode to Desktop switcher (Super+Shift+R)"
     ["/usr/local/bin/gaming-keybind-monitor"]="755:Keybind monitor for Super+Shift+R"
+    ["/usr/local/bin/deckshift-portal-recovery"]="755:xdg-desktop-portal restart helper (post-Gaming-Mode)"
     ["/usr/local/bin/gamescope-nm-start"]="755:NetworkManager start script"
     ["/usr/local/bin/gamescope-nm-stop"]="755:NetworkManager stop script"
     ["/usr/local/bin/steam-library-mount"]="755:Steam library drive auto-mount script"
