@@ -1,14 +1,30 @@
 # DeckShift
 
-**Version 0.1.3** — Steam Deck-style gaming mode for Linux + Hyprland. Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
+**Version 0.1.6** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
 
-Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift as the project moves toward distro-portability.
+Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift.
 
-> **Current status**: targets [Omarchy](https://omarchy.com) (Arch + Hyprland + SDDM + iwd). Works on other Arch + Hyprland setups with minor manual tweaks. Cross-distro support (Fedora / openSUSE / Cachy) is the next direction.
+> **Target:** [Omarchy](https://omarchy.com) — Arch + Hyprland + SDDM + Walker. DeckShift depends on Omarchy-specific helpers (`omarchy-pkg-add`, `omarchy-restart-walker`, etc.) and is not intended to be cross-distro.
 
 [![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
 
 ## What's New
+
+### v0.1.6 — Omarchy-only, simpler portal recovery
+
+- Dropped the non-Omarchy fallback in `deckshift-portal-recovery` — DeckShift targets Omarchy only, so the helper now just calls `omarchy-restart-walker` directly.
+- Header / docs cleaned up to drop the "cross-distro is the next direction" note.
+
+### v0.1.5 — clipboard recovery after Gaming Mode
+
+- After returning from Gaming Mode, Walker's clipboard listener (`elephant.service`) was still bound to the killed Hyprland's Wayland socket, so paste did nothing and clipboard history was empty.
+- `deckshift-portal-recovery` now calls `omarchy-restart-walker` at the end, which restarts `elephant.service` + `app-walker@autostart.service` and reattaches the clipboard to the live compositor.
+
+### v0.1.4 — portal recovery race fix
+
+- The initial `deckshift-portal-recovery` helper restarted all five services (xdg-desktop-portal-hyprland, xdg-desktop-portal, pipewire, pipewire-pulse, wireplumber) simultaneously. That raced — the portals could come up before wireplumber had rebuilt the node graph, leaving the screencast portal bound to nothing.
+- Rewritten as a serialised sequence: push live `WAYLAND_DISPLAY`/`XDG_*` env into systemd-user + D-Bus activation env → stop portals → SIGTERM/SIGKILL stragglers → restart pipewire stack → wait → start portals.
+- Thanks to the user on the issue tracker who diagnosed the race and supplied the env-update + serialised-restart sequence.
 
 ### v0.1.3 — power-state save/restore + reliable exit
 
@@ -431,17 +447,17 @@ See [Recovery from a Black Screen](#recovery-from-a-black-screen) for how to get
 - Check PipeWire config exists: `cat /etc/pipewire/pipewire.conf.d/10-gaming-latency.conf`
 - Try lower quantum: edit the config and set `default.clock.min-quantum = 128`
 
-**Screen sharing in Chromium / Firefox is broken after returning from Gaming Mode (only "Share a tab" works)**
+**Screen sharing in Chromium / Firefox is broken after returning from Gaming Mode (only "Share a tab" works) — and/or clipboard is dead**
 
-`xdg-desktop-portal-hyprland` is bound to the killed Hyprland instance — tab capture works because it bypasses the portal, but desktop/window capture goes through it and fails silently.
+Both symptoms have the same root cause: `xdg-desktop-portal-hyprland` and Walker's `elephant.service` (the clipboard listener) are still bound to the killed Hyprland instance after the SDDM restart. Tab capture in Chromium works because it bypasses the portal entirely. Clipboard listening, screen capture, and window capture all go through services that need to be reattached to the live compositor.
 
-DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery` (autostarted from `~/.config/hypr/autostart.conf`). If you installed before this fix or the autostart hook didn't get added, run:
+DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery` (autostarted from `~/.config/hypr/autostart.conf`). If you installed before this fix, re-run `./deckshift.sh` to install the helper, or run the recovery manually:
 
 ```bash
-systemctl --user restart xdg-desktop-portal-hyprland xdg-desktop-portal pipewire pipewire-pulse wireplumber
+touch /tmp/.deckshift-just-returned && /usr/local/bin/deckshift-portal-recovery
 ```
 
-then re-open the browser tab.
+then re-open the browser tab. (The `touch` is needed because the helper is a no-op without the marker file — that's deliberate, so it doesn't bounce portals on every normal login.)
 
 **Suspend fails with "Access denied" after returning from Gaming Mode**
 
