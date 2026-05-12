@@ -3,8 +3,8 @@
 # DeckShift - Steam Deck Mode for Linux + Hyprland
 #
 # Forked from Super-Shift-S-Omarchy-Deck-Mode (v12.27) → renamed Omarchy Deck →
-# renamed DeckShift. Currently targets Omarchy/Arch but distro-portability is
-# the next direction. Extended with:
+# renamed DeckShift. Targets Omarchy (Arch + Hyprland + SDDM + Walker). Extended
+# with:
 #   - NVIDIA GSP-aware driver branch selection (legacy 580xx for Pascal/Maxwell)
 #   - omarchy-pkg-add idempotent package installs
 #   - Optional Xbox Bluetooth controller support (xpadneo-dkms)
@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.5"
+DECKSHIFT_VERSION="0.1.6"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -2469,14 +2469,8 @@ sleep 2
 systemctl --user start xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
 
 # Walker (elephant) holds the clipboard listener, which is also bound to the
-# dead Hyprland's Wayland socket and stays broken until restarted. Prefer the
-# omarchy helper if present; fall back to direct systemctl --user.
-if command -v omarchy-restart-walker >/dev/null 2>&1; then
-  omarchy-restart-walker >/dev/null 2>&1 || true
-else
-  systemctl --user restart elephant.service 2>/dev/null || true
-  systemctl --user restart app-walker@autostart.service 2>/dev/null || true
-fi
+# dead Hyprland's Wayland socket and stays broken until restarted.
+omarchy-restart-walker >/dev/null 2>&1 || true
 PORTAL_RECOVERY
 
   sudo chmod +x "$portal_recovery"
