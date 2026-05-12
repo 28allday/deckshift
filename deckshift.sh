@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.1"
+DECKSHIFT_VERSION="0.1.4"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -2424,6 +2424,14 @@ KEYBIND_MONITOR
   # checks for that marker on every Hyprland start, and if present, bounces
   # the portal + pipewire user services so they reattach to the live HIS.
   # No marker = no-op (cheap; runs in milliseconds).
+  #
+  # The recovery sequence is ordered to avoid a race that earlier versions
+  # hit when restarting all five services simultaneously: portals could come
+  # up before wireplumber had finished building the node graph, so the
+  # screencast portal would bind to nothing. We now (a) push live session
+  # env into D-Bus + systemd --user so portals activate against the new
+  # Wayland socket, (b) stop portals first, (c) restart pipewire and wait
+  # for the graph, (d) start portals last.
   info "Creating portal recovery helper..."
   local portal_recovery="/usr/local/bin/deckshift-portal-recovery"
 
@@ -2432,16 +2440,32 @@ KEYBIND_MONITOR
 [[ -f /tmp/.deckshift-just-returned ]] || exit 0
 rm -f /tmp/.deckshift-just-returned
 
-# Give the new Hyprland a moment to fully come up and the user manager to
-# import HYPRLAND_INSTANCE_SIGNATURE / WAYLAND_DISPLAY into its environment.
+# Give the new Hyprland a moment to fully come up and export its env to the
+# user manager (HYPRLAND_INSTANCE_SIGNATURE / WAYLAND_DISPLAY).
 sleep 2
 
-systemctl --user restart \
-  xdg-desktop-portal-hyprland.service \
-  xdg-desktop-portal.service \
-  pipewire.service \
-  pipewire-pulse.service \
-  wireplumber.service 2>/dev/null || true
+# Pull the live session env into systemd --user and the D-Bus activation env,
+# so D-Bus-activated portals bind to the new Wayland socket, not the dead one
+# left over from the gamescope session.
+systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+
+# Stop portals first so they don't try to talk to a half-restarted pipewire.
+systemctl --user stop xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
+# Kill any zombies left over from gamescope's session (SIGTERM, then SIGKILL
+# only for stragglers — SIGKILL alone leaves stale D-Bus name registrations).
+pkill -TERM -x xdg-desktop-portal-hyprland xdg-desktop-portal xdg-desktop-portal-wlr 2>/dev/null
+sleep 0.5
+pkill -KILL -x xdg-desktop-portal-hyprland xdg-desktop-portal xdg-desktop-portal-wlr 2>/dev/null
+systemctl --user reset-failed xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
+
+# Restart pipewire stack and wait for wireplumber to rebuild the node graph
+# before portals come back up (otherwise screencast portal binds to nothing).
+systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
+sleep 2
+
+# Now bring portals up cleanly.
+systemctl --user start xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
 PORTAL_RECOVERY
 
   sudo chmod +x "$portal_recovery"
