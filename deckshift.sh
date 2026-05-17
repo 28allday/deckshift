@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.6"
+DECKSHIFT_VERSION="0.1.7"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -493,12 +493,10 @@ check_steam_dependencies() {
   local -a optional_deps=()
 
   local -a core_deps=(
-    "steam"
     "lib32-vulkan-icd-loader"
     "vulkan-icd-loader"
     "lib32-mesa"
     "mesa"
-    "mesa-utils"
     "lib32-glibc"
     "lib32-gcc-libs"
     "lib32-libx11"
@@ -547,7 +545,6 @@ check_steam_dependencies() {
       info "NVIDIA driver branch: modern (nvidia-utils)"
       gpu_deps+=(
         "nvidia-utils"
-        "lib32-nvidia-utils"
         "nvidia-settings"
         "libva-nvidia-driver"
       )
@@ -559,7 +556,6 @@ check_steam_dependencies() {
       info "NVIDIA driver branch: legacy 580xx (Maxwell/Pascal/Volta)"
       gpu_deps+=(
         "nvidia-580xx-utils"
-        "lib32-nvidia-580xx-utils"
         "nvidia-settings"
         "libva-nvidia-driver"
       )
@@ -571,7 +567,6 @@ check_steam_dependencies() {
       info "NVIDIA detected but driver branch unrecognised; defaulting to modern (nvidia-utils)"
       gpu_deps+=(
         "nvidia-utils"
-        "lib32-nvidia-utils"
         "nvidia-settings"
         "libva-nvidia-driver"
       )
@@ -581,17 +576,14 @@ check_steam_dependencies() {
   if $has_amd; then
     gpu_deps+=(
       "vulkan-radeon"
-      "lib32-vulkan-radeon"
       "libvdpau"
       "lib32-libvdpau"
     )
-    ! check_package "xf86-video-amdgpu" && optional_deps+=("xf86-video-amdgpu")
   fi
 
   if $has_intel; then
     gpu_deps+=(
       "vulkan-intel"
-      "lib32-vulkan-intel"
       "intel-media-driver"
     )
   fi
@@ -778,14 +770,15 @@ check_steam_dependencies() {
 
   check_steam_config
 
-  # Bootstrap Steam — launches it in the background so its first-run client
-  # update happens in parallel with the rest of the install. Same pattern as
-  # omarchy-install-gaming-steam. Skipped silently if Steam isn't installed
-  # (e.g. user declined to install missing required deps).
-  if check_package steam && command -v gtk-launch >/dev/null 2>&1; then
-    info "Launching Steam to complete its first-run download..."
-    setsid gtk-launch steam >/dev/null 2>&1 < /dev/null &
-    disown 2>/dev/null || true
+  # Bootstrap Steam via Omarchy's installer — idempotent and the canonical
+  # path on AMD/Intel/NVIDIA. Handles lib32 GPU drivers + setsid gtk-launch
+  # in one shot; previous homegrown gtk-launch call silently no-op'd on
+  # AMD systems that lacked gtk3.
+  if command -v omarchy-install-gaming-steam >/dev/null 2>&1; then
+    info "Bootstrapping Steam via omarchy-install-gaming-steam..."
+    omarchy-install-gaming-steam || warn "omarchy-install-gaming-steam returned non-zero"
+  else
+    warn "omarchy-install-gaming-steam not found — skipping Steam bootstrap"
   fi
 }
 
@@ -1144,7 +1137,7 @@ restart_elephant_walker() {
 # After installing packages, it also runs the sub-setup functions for
 # performance permissions, shader cache, and gamescope capabilities.
 setup_requirements() {
-  local -a required_packages=("steam" "gamescope" "mangohud" "python" "python-evdev" "libcap" "gamemode" "curl" "pciutils" "ntfs-3g" "xcb-util-cursor")
+  local -a required_packages=("gamescope" "mangohud" "python" "python-evdev" "libcap" "gamemode" "curl" "pciutils" "ntfs-3g" "xcb-util-cursor")
   local -a packages_to_install=()
   for pkg in "${required_packages[@]}"; do
     check_package "$pkg" || packages_to_install+=("$pkg")
