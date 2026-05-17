@@ -1,6 +1,6 @@
 # DeckShift
 
-**Version 0.1.6** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
+**Version 0.1.8** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
 
 Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift.
 
@@ -9,6 +9,16 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 [![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
 
 ## What's New
+
+### v0.1.8 — Settings TUI now reaches gamescope without re-login
+
+- The Settings TUI used to write `~/.config/environment.d/gamescope-session-plus.conf` and rely on the user logging out before the change reached `gamescope-session-plus@.service`. Saving the TUI now calls `systemctl --user import-environment` for the keys it just wrote, so the next Gaming Mode launch picks up the new values immediately.
+- Refresh-rate writes are now a comma list with `60` as the floor (e.g. `60,165`) rather than a single value. Gamescope's `--custom-refresh-rates` is a list of switchable rates, not a launch-rate selector — keeping `60` in the list guarantees a safe fallback if the high-rate mode isn't enumerated on first launch.
+- Fixes a reported regression where Gaming Mode always launched at 60 Hz on NVIDIA + HDMI even though the TUI showed the user's chosen rate.
+
+### v0.1.7 — Foot terminal compatibility
+
+- Internal: confirmed DeckShift Settings TUI works unchanged with Omarchy's new `foot` terminal (in addition to kitty / ghostty / alacritty). No code changes required — Omarchy's stock floating-window rule already lists foot's native class.
 
 ### v0.1.6 — Omarchy-only, simpler portal recovery
 
@@ -476,6 +486,18 @@ If you're on AC and using Omarchy, this is expected — see the *Performance Mod
 
 - Older Gen8/9 Intel iGPUs (Skylake, Kaby Lake) struggle with Vulkan workloads. Lower the launch resolution via the Settings TUI (`deckshift-settings`) — 720p / 1080p makes a big difference.
 - If you have a discrete GPU that should take over, check its driver is loaded: `lspci -k | grep -A2 VGA`
+
+**Gaming Mode launches at 60 Hz even though I picked a higher rate in the TUI**
+
+`--custom-refresh-rates` is gamescope's list of *switchable* rates, not a launch-rate selector. On embedded/DRM output (especially NVIDIA + HDMI) gamescope picks the connector's EDID-preferred mode at first launch, which is usually 60 Hz even when higher modes are enumerated. Two-step fix:
+
+1. Confirm the env var actually reached the session:
+   ```bash
+   systemctl --user show-environment | grep REFRESH
+   journalctl --user -u "gamescope-session-plus@*" -b --no-pager | grep -m1 -- '--custom-refresh-rates'
+   ```
+   In v0.1.8+ this should work without re-login — the Settings TUI now calls `systemctl --user import-environment` on save. If you're on an older release, log out and back in once after saving in the TUI.
+2. Once Steam Big Picture is up, set the rate explicitly: Settings → Display → Refresh Rate → your rate. Steam persists this client-side, so every subsequent Gaming Mode launch will go straight to that rate.
 
 ### Log Locations
 

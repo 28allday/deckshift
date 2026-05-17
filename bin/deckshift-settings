@@ -109,6 +109,19 @@ flush_pending() {
       echo "${key}=${value}" >> "$CONF"
     fi
   done
+
+  # environment.d/*.conf is parsed by `systemd --user` at user-manager startup,
+  # so edits made here don't reach gamescope-session-plus@.service until the
+  # next login unless we nudge systemd. import-environment pulls the keys we
+  # just wrote into the running user manager scope so the next Gaming Mode
+  # launch sees them without a re-login.
+  if [[ ${#PENDING_SET[@]} -gt 0 ]]; then
+    # shellcheck disable=SC2046
+    systemctl --user import-environment $(printf '%s ' "${!PENDING_SET[@]}") 2>/dev/null || true
+  fi
+  if [[ ${#PENDING_UNSET[@]} -gt 0 ]]; then
+    systemctl --user unset-environment "${!PENDING_UNSET[@]}" 2>/dev/null || true
+  fi
 }
 
 # ------------------------------------------------------------------------------
@@ -225,6 +238,12 @@ show_state() {
   width=$(effective SCREEN_WIDTH)
   height=$(effective SCREEN_HEIGHT)
   refresh=$(effective CUSTOM_REFRESH_RATES)
+  # Stored as a comma list (e.g. "60,165") so gamescope has a safe 60 Hz
+  # fallback. The user only cares about the rate they picked — the highest
+  # member of the list.
+  if [[ "$refresh" == *,* ]]; then
+    refresh=$(tr ',' '\n' <<<"$refresh" | sort -nr | head -1)
+  fi
   vk_adapter=$(effective VULKAN_ADAPTER)
   dri_prime=$(effective DRI_PRIME)
   prime_offload=$(effective __NV_PRIME_RENDER_OFFLOAD)
@@ -385,7 +404,17 @@ choose_refresh_rate() {
     rate=${choice%% *}
   fi
   [[ -z "$rate" ]] && return 0
-  pending_set CUSTOM_REFRESH_RATES "$rate"
+
+  # gamescope-session-plus passes this env value to gamescope as
+  # --custom-refresh-rates, which is a list of *switchable* rates the user can
+  # cycle between in Steam Big Picture. Writing a single value (e.g. "165") can
+  # leave gamescope without a safe 60 Hz fallback if the monitor's EDID
+  # preferred mode is 60 Hz and the high-rate mode isn't enumerated on first
+  # launch — most visibly on NVIDIA HDMI outputs. Always include 60 as the
+  # floor so Steam can fall back and the user can switch up to their pick.
+  local rate_list="$rate"
+  [[ "$rate" != "60" ]] && rate_list="60,${rate}"
+  pending_set CUSTOM_REFRESH_RATES "$rate_list"
 }
 
 # Keys this menu owns. Cleared at the start of every selection so switching
@@ -526,6 +555,11 @@ confirm_risky_save() {
   w=$(effective SCREEN_WIDTH)
   h=$(effective SCREEN_HEIGHT)
   rate=$(effective CUSTOM_REFRESH_RATES)
+  # Check the user's actual pick (highest of the comma list) against monitor
+  # support — not the bare list, which won't match a single mode line.
+  if [[ "$rate" == *,* ]]; then
+    rate=$(tr ',' '\n' <<<"$rate" | sort -nr | head -1)
+  fi
 
   local -a warnings=()
   if [[ -n "$w" && -n "$h" ]] && ! resolution_supported "$w" "$h"; then
