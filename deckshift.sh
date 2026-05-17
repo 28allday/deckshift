@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.8"
+DECKSHIFT_VERSION="0.1.9"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -1865,6 +1865,24 @@ UDISKS_POLKIT
 
   mkdir -p "$env_dir"
   touch "$gamescope_conf"
+
+  # Legacy CUSTOM_REFRESH_RATES migration (added in v0.1.9).
+  #
+  # Pre-v0.1.8 the Settings TUI wrote CUSTOM_REFRESH_RATES as a single rate
+  # (e.g. "165"). Gamescope's --custom-refresh-rates is a list of *switchable*
+  # rates, not a launch-rate selector — and with no safe 60 Hz fallback in the
+  # list, some DRM/NVIDIA paths drop to the EDID-preferred 60 Hz on first
+  # launch. v0.1.8+ writes a comma list (e.g. "60,165") from the TUI, but
+  # existing users still have the scalar in their conf. Rewrite it here so
+  # re-running the installer is enough to fix Gaming Mode for them — no need
+  # to re-open the TUI and re-pick the rate.
+  local legacy_rate
+  legacy_rate=$(grep -E '^CUSTOM_REFRESH_RATES=[0-9]+$' "$gamescope_conf" | head -1 | cut -d= -f2)
+  if [[ -n "$legacy_rate" && "$legacy_rate" != "60" ]]; then
+    info "Migrating CUSTOM_REFRESH_RATES=${legacy_rate} → 60,${legacy_rate} (v0.1.9 format)"
+    sed -i "s|^CUSTOM_REFRESH_RATES=.*|CUSTOM_REFRESH_RATES=60,${legacy_rate}|" "$gamescope_conf"
+    systemctl --user import-environment CUSTOM_REFRESH_RATES 2>/dev/null || true
+  fi
 
   # Per-key updater — replaces in place if present, appends if missing.
   # Same shape as the TUI's flush_pending so the two never fight.

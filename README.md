@@ -1,6 +1,6 @@
 # DeckShift
 
-**Version 0.1.8** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
+**Version 0.1.9** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
 
 Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift.
 
@@ -9,6 +9,10 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 [![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
 
 ## What's New
+
+### v0.1.9 — Auto-migrate legacy refresh-rate values
+
+- Installer now detects pre-v0.1.8 scalar `CUSTOM_REFRESH_RATES` values (e.g. `165`) and rewrites them to the v0.1.8 comma format (`60,165`), then imports the new value into the running systemd user environment. Re-running `./deckshift.sh` is enough to fix Gaming Mode for users hit by the 60 Hz bug — no need to re-open the Settings TUI and re-pick the rate.
 
 ### v0.1.8 — Settings TUI now reaches gamescope without re-login
 
