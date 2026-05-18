@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.11"
+DECKSHIFT_VERSION="0.1.12"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -1302,6 +1302,95 @@ setup_settings_tui() {
 # It also installs ChimeraOS's gamescope-session packages from AUR, which
 # provide the base session framework that the Steam Deck uses.
 # ==============================================================================
+
+# Patch the installed gamescope-session-plus script to add a --nested-refresh
+# fallback for CUSTOM_REFRESH_RATES.
+#
+# Why this exists:
+#   - DeckShift installs `gamescope` from Arch's `extra` repo (upstream Valve
+#     binary). That binary does NOT have `--custom-refresh-rates` — the flag is
+#     a ChimeraOS-fork (gamescope-plus) addition that never landed upstream.
+#   - The OpenGamingCollective (ex-ChimeraOS) `gamescope-session-plus` script
+#     we install from AUR was written assuming gamescope-plus. It feature-
+#     detects via `gamescope_has_option "--custom-refresh-rates"` and silently
+#     drops the value when the flag is missing. Result: CUSTOM_REFRESH_RATES
+#     reaches the script but never reaches gamescope, and Gaming Mode launches
+#     at the EDID-preferred rate (usually 60 Hz) regardless of TUI selection.
+#   - This patch adds an `elif` branch that falls back to `--nested-refresh`
+#     (the older flag that exists in every gamescope version) with the highest
+#     rate from the comma list as the launch rate.
+#
+# Idempotent: the patched line carries a `DECKSHIFT-NESTED-REFRESH-FALLBACK`
+# marker so re-runs detect "already patched" and skip. Re-applied on every
+# ./deckshift.sh run so pacman/AUR upgrades that clobber the script don't
+# silently regress refresh-rate handling.
+patch_gamescope_session_plus() {
+  local gsp="/usr/share/gamescope-session-plus/gamescope-session-plus"
+  if [[ ! -f "$gsp" ]]; then
+    warn "$gsp not found — skipping refresh-rate fallback patch"
+    return 0
+  fi
+
+  if grep -q "DECKSHIFT-NESTED-REFRESH-FALLBACK" "$gsp" 2>/dev/null; then
+    info "gamescope-session-plus already has DeckShift refresh-rate fallback"
+    return 0
+  fi
+
+  info "Patching gamescope-session-plus to add --nested-refresh fallback..."
+
+  local tmp
+  tmp=$(mktemp)
+  if ! python3 - "$gsp" "$tmp" <<'PY'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    content = f.read()
+
+# Match the 4-line block exactly as it ships in gamescope-session-git r339.
+# Group 1 = leading 3 lines (kept), group 2 = closing `fi` (kept). The new
+# elif+body lines are inserted between them.
+pattern = re.compile(
+    r'(\tCUSTOM_REFRESH_RATES_OPTION=""\n'
+    r'\tif \[ -n "\$CUSTOM_REFRESH_RATES" \] && gamescope_has_option "--custom-refresh-rates"; then\n'
+    r'\t\tCUSTOM_REFRESH_RATES_OPTION="--custom-refresh-rates \$CUSTOM_REFRESH_RATES"\n'
+    r')(\tfi\n)'
+)
+
+# Use a function as the replacement so re.sub doesn't process backslash escapes
+# in our string — we need literal `\n` in the `tr "," "\n"` argument to reach
+# the shell, and a string-form replacement would turn it into a real newline.
+def _patch(m):
+    return m.group(1) + (
+        '\telif [ -n "$CUSTOM_REFRESH_RATES" ] && gamescope_has_option "--nested-refresh"; then  # DECKSHIFT-NESTED-REFRESH-FALLBACK\n'
+        '\t\t_deckshift_rate=$(echo "$CUSTOM_REFRESH_RATES" | tr "," "\\n" | sort -nr | head -1)\n'
+        '\t\tCUSTOM_REFRESH_RATES_OPTION="--nested-refresh $_deckshift_rate"\n'
+    ) + m.group(2)
+
+new = pattern.sub(_patch, content, count=1)
+if new == content:
+    sys.stderr.write("could not locate CUSTOM_REFRESH_RATES_OPTION block in expected shape\n")
+    sys.exit(1)
+with open(dst, "w") as f:
+    f.write(new)
+PY
+  then
+    warn "Could not patch $gsp — upstream may have changed shape"
+    warn "Refresh-rate selection in the TUI will continue to be a no-op until this is resolved"
+    rm -f "$tmp"
+    return 1
+  fi
+
+  if ! grep -q "DECKSHIFT-NESTED-REFRESH-FALLBACK" "$tmp"; then
+    warn "Patch produced output but marker is missing — aborting install"
+    rm -f "$tmp"
+    return 1
+  fi
+
+  sudo install -m 0755 "$tmp" "$gsp"
+  rm -f "$tmp"
+  info "Patched $gsp — CUSTOM_REFRESH_RATES now reaches gamescope via --nested-refresh"
+}
+
 setup_session_switching() {
   echo ""
   echo "================================================================"
@@ -1525,6 +1614,11 @@ setup_session_switching() {
   else
     info "ChimeraOS gamescope-session packages already installed (correct -git versions)"
   fi
+
+  # Patch the installed gamescope-session-plus to add --nested-refresh
+  # fallback. Runs on every install so AUR upgrades that overwrite the file
+  # get re-patched the next time the user re-runs ./deckshift.sh.
+  patch_gamescope_session_plus
 
   # NetworkManager Integration
   #

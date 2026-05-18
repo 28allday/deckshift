@@ -10,6 +10,12 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 
 ## What's New
 
+### v0.1.12 — Refresh-rate selection actually reaches gamescope now
+
+- **The real bug:** Omarchy installs `gamescope` from Arch's `extra` repo (upstream Valve binary), but the AUR `gamescope-session-git` script (OpenGamingCollective / ex-ChimeraOS fork) was written assuming the ChimeraOS-fork `gamescope-plus` binary that ships `--custom-refresh-rates`. The fork isn't packaged for 64-bit Arch — we can't install it cleanly. The session script feature-detects via `gamescope_has_option "--custom-refresh-rates"`, finds it absent, and **silently drops the `CUSTOM_REFRESH_RATES` value before it reaches gamescope**. Net effect: every refresh-rate selection in the DeckShift TUI since the project began has been a no-op. Gaming Mode has been launching at the EDID-preferred mode (usually 60 Hz) regardless of what the user picked. v0.1.8's "60 Hz fix" was correct on paper but never actually reached the binary on Omarchy.
+- **The fix:** `./deckshift.sh` now patches `/usr/share/gamescope-session-plus/gamescope-session-plus` in place, adding an `elif` branch that falls back to `--nested-refresh` (a flag present in every gamescope version) with the highest value from the `CUSTOM_REFRESH_RATES` list as the launch rate. The patch is marked with a `DECKSHIFT-NESTED-REFRESH-FALLBACK` sentinel comment for idempotency, and is re-applied on every install so AUR upgrades that clobber the file don't silently regress refresh-rate handling.
+- **What you should do after upgrading:** re-run `./deckshift.sh` once. Future-you, if you ever see Gaming Mode stuck at 60 Hz after a `pacman -Syu` that touched `gamescope-session-git`, just re-run the installer — the patch reapplies cleanly.
+
 ### v0.1.11 — Multi-monitor handling: disable an auxiliary monitor before Gaming Mode
 
 - New env var `OUTPUT_CONNECTOR_TO_DISABLE` (single connector or comma list). When set, `switch-to-gaming` runs `hyprctl keyword monitor <conn>,disable` for each listed connector *before* SDDM restart, while Hyprland is still alive. The disable is runtime-only — when the user returns from Gaming Mode, the new Hyprland reads its static config fresh and the monitor comes back automatically.
