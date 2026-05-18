@@ -307,7 +307,7 @@ list_gpus() {
 # ------------------------------------------------------------------------------
 
 show_state() {
-  local connector width height refresh vk_adapter dri_prime prime_offload mesa_vk_select
+  local connector width height refresh vk_adapter dri_prime prime_offload mesa_vk_select disable_connector
   connector=$(effective OUTPUT_CONNECTOR)
   width=$(effective SCREEN_WIDTH)
   height=$(effective SCREEN_HEIGHT)
@@ -322,6 +322,7 @@ show_state() {
   dri_prime=$(effective DRI_PRIME)
   prime_offload=$(effective __NV_PRIME_RENDER_OFFLOAD)
   mesa_vk_select=$(effective MESA_VK_DEVICE_SELECT)
+  disable_connector=$(effective OUTPUT_CONNECTOR_TO_DISABLE)
 
   # Single GPU-mode line — shows the active mode rather than half-empty rows,
   # since the modes are mutually exclusive. AMD hybrid is identified by both
@@ -354,7 +355,7 @@ show_state() {
   fi
 
   # Replace $HOME with ~ so the config path fits the panel column.
-  local conf_display="${CONF/#$HOME/~}"
+  local conf_display="${CONF/#$HOME/\~}"
 
   cat <<EOF
 Gaming Mode display settings${pending_label}
@@ -363,6 +364,7 @@ Gaming Mode display settings${pending_label}
   Resolution   : ${resolution_label}
   Refresh rate : ${refresh:-<auto>} Hz
   GPU mode     : ${gpu_mode}
+  Hide monitor : ${disable_connector:-<none>}
 
 Config file  : ${conf_display}
 EOF
@@ -393,6 +395,49 @@ choose_monitor() {
     pending_unset OUTPUT_CONNECTOR
   else
     pending_set OUTPUT_CONNECTOR "${choice%%|*}"
+  fi
+}
+
+# choose_monitor_to_disable — picks a connector to physically disable (via
+# `hyprctl keyword monitor X,disable`) before Gaming Mode launches.
+#
+# Why this exists: with multiple monitors connected, gamescope-session-plus
+# can't reliably target a single output via OUTPUT_CONNECTOR alone — on some
+# setups it picks the wrong screen, on others it fails to start at all
+# (reported on a Framework Desktop + LG DualUp + Gigabyte M27Q setup).
+# Disabling the auxiliary monitor right before SDDM restart guarantees
+# gamescope only sees the gaming display.
+#
+# The disable is runtime-only (hyprctl keyword, not a config edit), so when
+# the user returns from Gaming Mode the fresh Hyprland reads its static
+# config and the monitor comes back automatically — no re-enable step needed.
+choose_monitor_to_disable() {
+  local choice gaming_monitor
+  gaming_monitor=$(effective OUTPUT_CONNECTOR)
+  mapfile -t connected < <(list_connected_monitors)
+  local -a labels=()
+  local entry conn
+  for entry in "${connected[@]}"; do
+    conn="${entry%%|*}"
+    # Exclude the gaming monitor — disabling it would be self-defeating.
+    [[ "$conn" == "$gaming_monitor" ]] && continue
+    labels+=("$entry")
+  done
+  labels+=("(clear / don't hide any monitor)")
+  if (( ${#labels[@]} == 1 )); then
+    gum confirm "Only the gaming monitor is connected. Set a connector to disable manually?" || return 0
+    local connector
+    connector=$(ginput --prompt "Connector to disable (e.g. HDMI-A-1): ")
+    [[ -z "$connector" ]] && return 0
+    pending_set OUTPUT_CONNECTOR_TO_DISABLE "$connector"
+    return 0
+  fi
+  choice=$(cmenu "Select monitor to disable while gaming" "${labels[@]}")
+  [[ -z "$choice" ]] && return 0
+  if [[ "$choice" == "(clear"* ]]; then
+    pending_unset OUTPUT_CONNECTOR_TO_DISABLE
+  else
+    pending_set OUTPUT_CONNECTOR_TO_DISABLE "${choice%%|*}"
   fi
 }
 
@@ -699,13 +744,15 @@ main() {
       "Resolution" \
       "Refresh rate" \
       "GPU" \
+      "Hide monitor" \
       "$save_label" \
       "$cancel_label")
     case "$action" in
-      "Monitor")        choose_monitor       ;;
-      "Resolution")     choose_resolution    ;;
-      "Refresh rate")   choose_refresh_rate  ;;
-      "GPU")            choose_gpu           ;;
+      "Monitor")        choose_monitor             ;;
+      "Resolution")     choose_resolution          ;;
+      "Refresh rate")   choose_refresh_rate        ;;
+      "GPU")            choose_gpu                 ;;
+      "Hide monitor")   choose_monitor_to_disable  ;;
       "Save and exit"*)
         if ! confirm_risky_save; then
           continue
@@ -713,7 +760,7 @@ main() {
         flush_pending
         clear
         echo ""
-        gum style --foreground 212 "Settings saved to ${CONF/#$HOME/~}" | pad_block
+        gum style --foreground 212 "Settings saved to ${CONF/#$HOME/\~}" | pad_block
         gum style --foreground 244 "Changes apply next time you enter Gaming Mode (Super+Shift+S)." | pad_block
         sleep 1
         return 0

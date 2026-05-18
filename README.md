@@ -10,6 +10,13 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 
 ## What's New
 
+### v0.1.11 — Multi-monitor handling: disable an auxiliary monitor before Gaming Mode
+
+- New env var `OUTPUT_CONNECTOR_TO_DISABLE` (single connector or comma list). When set, `switch-to-gaming` runs `hyprctl keyword monitor <conn>,disable` for each listed connector *before* SDDM restart, while Hyprland is still alive. The disable is runtime-only — when the user returns from Gaming Mode, the new Hyprland reads its static config fresh and the monitor comes back automatically.
+- Settings TUI exposes this as a **"Hide monitor"** option in the main menu and on the state panel. The picker lists every connected monitor *except* the gaming one, plus a "(clear)" entry to remove the override.
+- Fixes a reported issue on multi-monitor setups (e.g. Framework Desktop + LG DualUp + Gigabyte M27Q) where gamescope would either land on the wrong screen or refuse to start when both monitors were attached. The previous workaround was to physically unplug the second monitor.
+- Also fixes a latent bug from v0.1.10: the config-file path in the TUI was supposed to render with `~` instead of `/home/<user>` to fit the panel, but bash's tilde-expansion on the replacement side of `${var/#pat/~}` re-expanded `~` back to `$HOME`, making the substitution a no-op. The replacement is now escaped as `\~`.
+
 ### v0.1.10 — Settings TUI layout polish
 
 - Banner, state panel, menu header, and menu items now share a single centred panel column rather than each block centring itself independently. The TUI feels visibly aligned in a Walker floating window of any width — no more drifting elements off to the left while the menu floats to the right.

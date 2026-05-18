@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.10"
+DECKSHIFT_VERSION="0.1.11"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -2219,6 +2219,28 @@ notify-send -u normal -t 2000 "Gaming Mode" "Switching to Gaming Mode..." 2>/dev
 pkill -9 gamescope 2>/dev/null || true
 pkill -9 -f gamescope-session 2>/dev/null || true
 sleep 1
+
+# Multi-monitor handling — gamescope-session-plus picks an output by env, but
+# with two monitors connected it sometimes lands on the wrong one (or refuses
+# to start). If OUTPUT_CONNECTOR_TO_DISABLE is set in the user's env conf,
+# disable those connectors via hyprctl while Hyprland is still alive so
+# gamescope only sees the gaming display. The disable is runtime-only (no
+# config edit) so when the user returns from Gaming Mode the new Hyprland
+# reads its static config fresh and the monitor comes back automatically.
+ENV_CONF="$HOME/.config/environment.d/gamescope-session-plus.conf"
+if [[ -f "$ENV_CONF" ]]; then
+  TO_DISABLE=$(awk -F= '$1=="OUTPUT_CONNECTOR_TO_DISABLE" { sub(/^[^=]*=/,""); v=$0 } END { print v }' "$ENV_CONF")
+  if [[ -n "$TO_DISABLE" ]]; then
+    IFS=',' read -ra DISABLE_LIST <<< "$TO_DISABLE"
+    for conn in "${DISABLE_LIST[@]}"; do
+      conn="${conn// /}"
+      [[ -z "$conn" ]] && continue
+      hyprctl keyword monitor "${conn},disable" 2>/dev/null || true
+    done
+    sleep 0.5
+  fi
+fi
+
 sudo -n chvt 2 2>/dev/null || true
 sleep 0.3
 sudo -n systemctl restart sddm
