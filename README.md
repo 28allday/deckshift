@@ -10,6 +10,14 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 
 ## What's New
 
+### v0.1.10 — Settings TUI layout polish
+
+- Banner, state panel, menu header, and menu items now share a single centred panel column rather than each block centring itself independently. The TUI feels visibly aligned in a Walker floating window of any width — no more drifting elements off to the left while the menu floats to the right.
+- Panel width is adaptive (`min(terminal − 6, 60)`, floored at 40) so the layout looks right from narrow ttys up to fullscreen.
+- Terminal-width detection now reads `stty size </dev/tty` first (kernel-reported, always reflects the live window) and only falls back to `tput cols` / `80`. Fixes off-centre rendering in freshly-spawned floating terminals whose terminfo hasn't caught up yet.
+- Config-file path now renders with `~` instead of `/home/<user>/…` so it fits the panel.
+- Unset resolution shows `<auto>` (matching the other unset placeholders) instead of `?x?`.
+
 ### v0.1.9 — Auto-migrate legacy refresh-rate values
 
 - Installer now detects pre-v0.1.8 scalar `CUSTOM_REFRESH_RATES` values (e.g. `165`) and rewrites them to the v0.1.8 comma format (`60,165`), then imports the new value into the running systemd user environment. Re-running `./deckshift.sh` is enough to fix Gaming Mode for users hit by the 60 Hz bug — no need to re-open the Settings TUI and re-pick the rate.

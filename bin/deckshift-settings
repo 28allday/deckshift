@@ -49,6 +49,80 @@ command -v jq >/dev/null || die "jq is required (install with: omarchy-pkg-add j
 command -v hyprctl >/dev/null || die "hyprctl is required (this TUI is for Hyprland sessions)"
 
 # ------------------------------------------------------------------------------
+# Layout — everything renders inside a single centred "panel" column so the
+# banner, state, menu, and toasts all share a left edge regardless of terminal
+# width.  PANEL_WIDTH is adaptive: target 60 cols, capped at the terminal width
+# minus margin, floored so it stays usable on narrow windows.
+# ------------------------------------------------------------------------------
+
+# Live terminal width — refreshed each main loop iteration so a window resize
+# is picked up between menus. Reads via `stty size` first (kernel-reported,
+# always reflects the live window) because `tput cols` in a freshly-spawned
+# floating terminal sometimes returns the terminfo default (80) before the
+# compositor has applied its size.
+#
+# Every `$(...)` here ends with `|| true` because under `set -eo pipefail` a
+# failing pipeline inside a command substitution propagates out and trips -e
+# on the enclosing assignment.
+COLS=80
+PANEL_WIDTH=60
+LEFT_MARGIN=0
+LEFT_PAD=""
+
+refresh_cols() {
+  local raw
+  raw=$(stty size 2>/dev/null </dev/tty || true)
+  if [[ "$raw" =~ ^[0-9]+[[:space:]]+([0-9]+) ]] && (( BASH_REMATCH[1] > 0 )); then
+    COLS=${BASH_REMATCH[1]}
+  else
+    raw=$(tput cols 2>/dev/null || true)
+    if [[ "$raw" =~ ^[0-9]+$ ]] && (( raw > 0 )); then
+      COLS=$raw
+    else
+      COLS=80
+    fi
+  fi
+  PANEL_WIDTH=60
+  (( PANEL_WIDTH > COLS - 6 )) && PANEL_WIDTH=$(( COLS - 6 ))
+  (( PANEL_WIDTH < 40 )) && PANEL_WIDTH=40
+  LEFT_MARGIN=$(( (COLS - PANEL_WIDTH) / 2 ))
+  (( LEFT_MARGIN < 0 )) && LEFT_MARGIN=0
+  LEFT_PAD=""
+  (( LEFT_MARGIN > 0 )) && printf -v LEFT_PAD '%*s' "$LEFT_MARGIN" ''
+}
+
+# Prepend N spaces to every line of stdin. Used to position blocks at the
+# panel's left edge so banner, state, menu, and toasts share one column.
+pad_block() {
+  local n="${1:-$LEFT_MARGIN}"
+  local pad=""
+  (( n > 0 )) && printf -v pad '%*s' "$n" ''
+  local line
+  while IFS= read -r line; do
+    printf '%s%s\n' "$pad" "$line"
+  done
+}
+
+# Centred wrapper around gum choose: positions the menu horizontally so it
+# sits inside the panel column. gum draws at column 0 with no alignment flag,
+# but it reserves the cursor string's width as the gutter for unselected rows,
+# so baking padding into the cursor prefix shifts the whole rendered block.
+# Header is padded separately so it sits above the items at the same offset.
+#
+# Usage: cmenu "Header text" "Item 1" "Item 2" ...
+# Cancellation (Esc/Ctrl-C) returns empty just like gchoose.
+cmenu() {
+  refresh_cols
+  local header="$1"; shift
+  # Left-align the menu at the panel's left edge so the "> " cursor and item
+  # labels sit in the same column as the state panel's section headers and
+  # rows above. Centering items within the panel would put them in the middle
+  # of the panel — visually disconnected from the state panel column.
+  local pad="$LEFT_PAD"
+  gchoose --cursor "${pad}> " --header "${pad}${header}" "$@"
+}
+
+# ------------------------------------------------------------------------------
 # Conf helpers — read straight from disk; writes go through pending_* below so
 # nothing hits the file until the user explicitly saves.
 # ------------------------------------------------------------------------------
@@ -272,15 +346,25 @@ show_state() {
     monitor_label="${monitor_label} (max ${HYPR_NATIVE} @ ${HYPR_MAX_REFRESH:-?}Hz)"
   fi
 
+  # Build resolution label so an unset value renders as "<auto>" (matching the
+  # other unset placeholders) rather than "?x?".
+  local resolution_label="<auto>"
+  if [[ -n "$width" && -n "$height" ]]; then
+    resolution_label="${width}x${height}"
+  fi
+
+  # Replace $HOME with ~ so the config path fits the panel column.
+  local conf_display="${CONF/#$HOME/~}"
+
   cat <<EOF
-Gaming Mode display settings${pending_label}:
+Gaming Mode display settings${pending_label}
 
   Monitor      : ${monitor_label}
-  Resolution   : ${width:-?}x${height:-?}
+  Resolution   : ${resolution_label}
   Refresh rate : ${refresh:-<auto>} Hz
   GPU mode     : ${gpu_mode}
 
-Config file : ${CONF}
+Config file  : ${conf_display}
 EOF
 }
 
@@ -303,7 +387,7 @@ choose_monitor() {
     pending_set OUTPUT_CONNECTOR "$connector"
     return 0
   fi
-  choice=$(printf '%s\n' "${labels[@]}" | gchoose --header "Select monitor for Gaming Mode")
+  choice=$(cmenu "Select monitor for Gaming Mode" "${labels[@]}")
   [[ -z "$choice" ]] && return 0
   if [[ "$choice" == "(clear"* ]]; then
     pending_unset OUTPUT_CONNECTOR
@@ -341,7 +425,7 @@ choose_resolution() {
 
   options+=("Custom…")
 
-  choice=$(printf '%s\n' "${options[@]}" | gchoose --header "Select launch resolution (max: ${HYPR_NATIVE:-unknown})")
+  choice=$(cmenu "Select launch resolution (max: ${HYPR_NATIVE:-unknown})" "${options[@]}")
   [[ -z "$choice" ]] && return 0
   if [[ "$choice" == "Custom…" ]]; then
     w=$(ginput --prompt "Width:  " --placeholder "2560")
@@ -396,7 +480,7 @@ choose_refresh_rate() {
 
   options+=("Custom…")
 
-  choice=$(printf '%s\n' "${options[@]}" | gchoose --header "Select refresh rate (Hz, max: ${HYPR_MAX_REFRESH:-unknown})")
+  choice=$(cmenu "Select refresh rate (Hz, max: ${HYPR_MAX_REFRESH:-unknown})" "${options[@]}")
   [[ -z "$choice" ]] && return 0
   if [[ "$choice" == "Custom…" ]]; then
     rate=$(ginput --prompt "Rate (Hz): " --placeholder "144")
@@ -473,7 +557,7 @@ choose_gpu() {
   done
   labels+=("(clear GPU override — let system decide)")
 
-  choice=$(printf '%s\n' "${labels[@]}" | gchoose --header "Select GPU for Gaming Mode")
+  choice=$(cmenu "Select GPU for Gaming Mode" "${labels[@]}")
   [[ -z "$choice" ]] && return 0
 
   # Wipe every GPU-mode key first; each branch sets only what it needs.
@@ -500,7 +584,7 @@ choose_gpu() {
         esac
       done
       local t_choice t_entry=""
-      t_choice=$(printf '%s\n' "${t_labels[@]}" | gchoose --header "Pick dGPU (render target) — usually the discrete one")
+      t_choice=$(cmenu "Pick dGPU (render target) — usually the discrete one" "${t_labels[@]}")
       [[ -z "$t_choice" ]] && return 0
       local i
       for ((i=0; i<${#t_labels[@]}; i++)); do
@@ -571,12 +655,14 @@ confirm_risky_save() {
 
   (( ${#warnings[@]} == 0 )) && return 0
 
+  refresh_cols
   clear
-  gum style --foreground 196 --bold "Warning — selected values may not work:"
   echo ""
-  printf '  %s\n' "${warnings[@]}"
+  gum style --foreground 196 --bold "Warning — selected values may not work:" | pad_block
   echo ""
-  gum style --foreground 244 "If Gaming Mode shows a black screen, press Super+Shift+R to return to desktop."
+  printf '  %s\n' "${warnings[@]}" | pad_block
+  echo ""
+  gum style --foreground 244 "If Gaming Mode shows a black screen, press Super+Shift+R to return to desktop." | pad_block
   echo ""
   gum confirm "Save anyway?" --default=false
 }
@@ -587,12 +673,17 @@ confirm_risky_save() {
 
 main() {
   while true; do
+    refresh_cols
     refresh_monitor_data
     clear
+    echo ""
     gum style \
-      --border double --margin "1" --padding "1 4" --border-foreground 212 \
-      "DECKSHIFT — Gaming Mode Settings"
-    show_state
+      --border double --padding "1 0" --border-foreground 212 \
+      --width "$PANEL_WIDTH" --align center \
+      "DECKSHIFT — Gaming Mode Settings" \
+      | pad_block
+    echo ""
+    show_state | pad_block
     echo ""
 
     local save_label="Save and exit"
@@ -603,7 +694,7 @@ main() {
     fi
 
     local action
-    action=$(gchoose --header "What do you want to change?" \
+    action=$(cmenu "What do you want to change?" \
       "Monitor" \
       "Resolution" \
       "Refresh rate" \
@@ -621,8 +712,9 @@ main() {
         fi
         flush_pending
         clear
-        gum style --foreground 212 "Settings saved to $CONF"
-        gum style --foreground 244 "Changes apply next time you enter Gaming Mode (Super+Shift+S)."
+        echo ""
+        gum style --foreground 212 "Settings saved to ${CONF/#$HOME/~}" | pad_block
+        gum style --foreground 244 "Changes apply next time you enter Gaming Mode (Super+Shift+S)." | pad_block
         sleep 1
         return 0
         ;;
@@ -631,7 +723,8 @@ main() {
           gum confirm "Discard unsaved changes?" --default=true || continue
         fi
         clear
-        gum style --foreground 244 "No changes saved."
+        echo ""
+        gum style --foreground 244 "No changes saved." | pad_block
         sleep 1
         return 0
         ;;
