@@ -10,6 +10,12 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 
 ## What's New
 
+### v0.1.13 — Pacman hook keeps gamescope's cap_sys_nice across upgrades
+
+- Linux file capabilities live as an xattr (`security.capability`) on the inode, so every time pacman replaces `/usr/bin/gamescope` during an upgrade the previously-granted `cap_sys_nice=eip` is silently lost. Performance mode keeps "working" but the compositor thread loses its priority boost — worse frame pacing and input latency, with no error surfaced anywhere.
+- DeckShift now installs `/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook`, a pacman hook that re-applies `cap_sys_nice=eip` PostTransaction whenever `gamescope` is installed or upgraded. The installer prompts for it the same time it asks for the initial capability grant; if you already consented on a prior install, re-running `./deckshift.sh` adds the hook silently.
+- The hook is treated as optional in the verification step, so users who declined performance mode (or declined the cap prompt) won't see a missing-file warning.
+
 ### v0.1.12 — Refresh-rate selection actually reaches gamescope now
 
 - **The real bug:** Omarchy installs `gamescope` from Arch's `extra` repo (upstream Valve binary), but the AUR `gamescope-session-git` script (OpenGamingCollective / ex-ChimeraOS fork) was written assuming the ChimeraOS-fork `gamescope-plus` binary that ships `--custom-refresh-rates`. The fork isn't packaged for 64-bit Arch — we can't install it cleanly. The session script feature-detects via `gamescope_has_option "--custom-refresh-rates"`, finds it absent, and **silently drops the `CUSTOM_REFRESH_RATES` value before it reaches gamescope**. Net effect: every refresh-rate selection in the DeckShift TUI since the project began has been a no-op. Gaming Mode has been launching at the EDID-preferred mode (usually 60 Hz) regardless of what the user picked. v0.1.8's "60 Hz fix" was correct on paper but never actually reached the binary on Omarchy.

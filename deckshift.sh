@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.12"
+DECKSHIFT_VERSION="0.1.13"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -1162,22 +1162,62 @@ setup_requirements() {
   configure_elephant_launcher
 
   if [[ "${PERFORMANCE_MODE,,}" == "enabled" ]] && command -v gamescope >/dev/null 2>&1; then
-    if ! getcap "$(command -v gamescope)" 2>/dev/null | grep -q 'cap_sys_nice'; then
+    local hook_path="/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook"
+    local needs_cap=false
+    getcap "$(command -v gamescope)" 2>/dev/null | grep -q 'cap_sys_nice' || needs_cap=true
+
+    if $needs_cap || ! sudo test -f "$hook_path"; then
       echo ""
       echo "================================================================"
       echo "  GAMESCOPE CAPABILITY REQUEST"
       echo "================================================================"
       echo ""
-      echo "  Performance mode requires granting cap_sys_nice to gamescope."
+      echo "  Performance mode needs cap_sys_nice on gamescope (better frame"
+      echo "  pacing + lower input latency). Pacman strips file capabilities"
+      echo "  on every gamescope upgrade, so DeckShift also installs a pacman"
+      echo "  hook that re-applies the cap automatically post-upgrade."
       echo ""
-      read -p "Grant cap_sys_nice to gamescope? [Y/n]: " -n 1 -r
+      read -p "Grant cap_sys_nice + install pacman hook? [Y/n]: " -n 1 -r
       echo
       if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        sudo setcap 'cap_sys_nice=eip' "$(command -v gamescope)" || warn "Failed to set capability"
-        info "Capability granted to gamescope"
+        if $needs_cap; then
+          sudo setcap 'cap_sys_nice=eip' "$(command -v gamescope)" || warn "Failed to set capability"
+          info "Capability granted to gamescope"
+        fi
+        install_gamescope_cap_hook
       fi
+    else
+      install_gamescope_cap_hook
     fi
   fi
+}
+
+# Pacman strips file capabilities (security.capability xattr) every time it
+# replaces the gamescope binary on upgrade. Without cap_sys_nice the
+# compositor thread loses its priority boost and performance mode silently
+# regresses (no error surfaced). This hook re-applies the cap PostTransaction
+# whenever gamescope is installed or upgraded. Idempotent — safe to re-run.
+install_gamescope_cap_hook() {
+  local hook_path="/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook"
+  sudo install -d -m 755 /usr/share/libalpm/hooks
+  sudo tee "$hook_path" > /dev/null << 'HOOK'
+# Managed by DeckShift — DO NOT EDIT.
+# Re-applies cap_sys_nice to gamescope after every pacman upgrade. File
+# capabilities live on the inode as a security.capability xattr and are lost
+# when pacman replaces the binary.
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/bin/gamescope
+
+[Action]
+Description = DeckShift: re-applying cap_sys_nice to gamescope
+When = PostTransaction
+Exec = /usr/bin/setcap cap_sys_nice=eip /usr/bin/gamescope
+HOOK
+  sudo chmod 644 "$hook_path"
+  info "Installed pacman hook: $hook_path"
 }
 
 # Optional: install Bluetooth Xbox controller support (xpadneo).
@@ -2902,6 +2942,7 @@ verify_installation() {
     ["/etc/environment.d/99-shader-cache.conf"]="644:Shader cache config"
     ["/usr/local/bin/deckshift-settings"]="755:Gaming Mode settings TUI"
     ["/usr/share/applications/deckshift-settings.desktop"]="644:Walker launcher for settings TUI"
+    ["/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook"]="644:Pacman hook re-applies cap_sys_nice on gamescope upgrade (optional)"
   )
   echo "  FILE STATUS:"
   echo "  ------------"
