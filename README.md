@@ -1,6 +1,6 @@
 # DeckShift
 
-**Version 0.1.14** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+G` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
+**Version 0.1.9** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
 
 Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift.
 
@@ -108,7 +108,7 @@ After install, launch `DeckShift Settings` from Walker (or run `deckshift-settin
 
 The `[hybrid-*]` options only appear when the relevant GPU pair is detected.
 
-The TUI launches as a floating window via Omarchy's `TUI.float` pattern. Selections are **buffered** — nothing is written to disk until you pick **Save and exit**. **Cancel** discards unsaved changes. Saved changes apply next time you enter Gaming Mode (`Super+Shift+G`).
+The TUI launches as a floating window via Omarchy's `TUI.float` pattern. Selections are **buffered** — nothing is written to disk until you pick **Save and exit**. **Cancel** discards unsaved changes. Saved changes apply next time you enter Gaming Mode (`Super+Shift+S`).
 
 ## What It Does
 
@@ -148,13 +148,13 @@ After install, open `DeckShift Settings` from Walker and pick:
 - A resolution / refresh rate
 - A GPU mode — for hybrid laptops, prefer `[hybrid-nvidia]` or `[hybrid-amd]` over the direct options
 
-Save, then `Super+Shift+G` to launch Gaming Mode.
+Save, then `Super+Shift+S` to launch Gaming Mode.
 
 ## Usage
 
 | Action | How |
 |---|---|
-| Enter Gaming Mode | `Super + Shift + G` |
+| Enter Gaming Mode | `Super + Shift + S` |
 | Return to Desktop | `Super + Shift + R` *(global keybind monitor catches it inside Gamescope)* |
 | Return to Desktop (alternative) | Steam → Power → **Switch to Desktop** |
 | Open settings | Walker → `DeckShift Settings`, or run `deckshift-settings` |
@@ -281,7 +281,7 @@ Package installs use Omarchy's `omarchy-pkg-add` (idempotent, double-checks pacm
 | Path | Purpose |
 |---|---|
 | `~/.config/environment.d/gamescope-session-plus.conf` | Gamescope session config (display + GPU keys) — managed via the Settings TUI |
-| `~/.config/hypr/bindings.conf` | Hyprland keybind for `Super+Shift+G` (appended) |
+| `~/.config/hypr/bindings.conf` | Hyprland keybind for `Super+Shift+S` (appended) |
 | `~/.cache/deckshift/saved-state` | Pre-Gaming-Mode CPU governor + power profile (created on entry, cleaned up on exit) |
 
 #### Settings TUI
@@ -297,7 +297,7 @@ Package installs use Omarchy's `omarchy-pkg-add` (idempotent, double-checks pacm
 ```
 Desktop Mode (Hyprland)
     │
-    ├─ Super+Shift+G pressed
+    ├─ Super+Shift+S pressed
     │   └─ switch-to-gaming runs:
     │       ├─ Masks suspend targets (prevents sleep during switch)
     │       ├─ Updates SDDM config to gaming session
