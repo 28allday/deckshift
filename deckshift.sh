@@ -19,7 +19,7 @@
 #   - Installing all Steam/gaming dependencies and GPU drivers
 #   - Configuring NVIDIA kernel parameters (nvidia-drm.modeset=1)
 #   - Setting up session switching between Hyprland and Gamescope via SDDM
-#   - Creating keybinds (Super+Shift+S to enter, Super+Shift+R to exit)
+#   - Creating keybinds (Super+Shift+G to enter, Super+Shift+R to exit)
 #   - Configuring NetworkManager handoff (iwd <-> NM) for Steam network access
 #   - Setting up performance tuning (CPU governor, GPU power, kernel sysctl)
 #   - Auto-mounting external drives with Steam libraries
@@ -34,7 +34,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.13"
+DECKSHIFT_VERSION="0.1.14"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -1322,7 +1322,7 @@ setup_settings_tui() {
 # (Gamescope + Steam Big Picture).
 #
 # The switching mechanism works through SDDM (the display/login manager):
-#   1. User presses Super+Shift+S in Hyprland
+#   1. User presses Super+Shift+G in Hyprland
 #   2. switch-to-gaming script updates SDDM config to point to Gaming session
 #   3. SDDM restarts and auto-logs into the Gaming Mode session
 #   4. gamescope-session-nm-wrapper starts performance tuning, NetworkManager,
@@ -1337,7 +1337,7 @@ setup_settings_tui() {
 #   - Steam library auto-mount daemon
 #   - SDDM session entry and config
 #   - Polkit and sudoers rules for passwordless operation
-#   - Hyprland keybind for Super+Shift+S
+#   - Hyprland keybind for Super+Shift+G
 #
 # It also installs ChimeraOS's gamescope-session packages from AUR, which
 # provide the base session framework that the Steam Deck uses.
@@ -1458,7 +1458,7 @@ setup_session_switching() {
 
   echo "  This will:"
   echo "    - Install gamescope-session-git and gamescope-session-steam-git from AUR"
-  echo "    - Configure Super+Shift+S to switch to Gaming Mode"
+  echo "    - Configure Super+Shift+G to switch to Gaming Mode"
   echo "    - Configure Steam's 'Exit to Desktop' to return to Hyprland"
   echo ""
   read -p "Set up session switching? [Y/n]: " -n 1 -r
@@ -2330,7 +2330,7 @@ OS_SESSION_SELECT
   sudo chmod +x "$os_session_select"
   info "Created $os_session_select"
 
-  # switch-to-gaming — Called when Super+Shift+S is pressed in Hyprland
+  # switch-to-gaming — Called when Super+Shift+G is pressed in Hyprland
   #
   # This script handles the transition from Desktop to Gaming Mode:
   #   1. Masks suspend targets — prevents the system from sleeping when the
@@ -2772,14 +2772,20 @@ SUDOERS_SWITCH
 
   if [[ ! -f "$hypr_bindings_conf" ]]; then
     warn "bindings.conf not found at $hypr_bindings_conf - skipping keybind setup"
-    warn "You can manually add: bindd = SUPER SHIFT, S, Gaming Mode, exec, /usr/local/bin/switch-to-gaming"
+    warn "You can manually add: bindd = SUPER SHIFT, G, Gaming Mode, exec, /usr/local/bin/switch-to-gaming"
   else
     if grep -q "switch-to-gaming" "$hypr_bindings_conf" 2>/dev/null; then
-      info "Gaming Mode keybind already exists in bindings.conf"
+      # Migrate the legacy Super+Shift+S bind from older installs to Super+Shift+G.
+      if grep -qE '^bindd = SUPER SHIFT, S, Gaming Mode, exec, /usr/local/bin/switch-to-gaming' "$hypr_bindings_conf" 2>/dev/null; then
+        sed -i 's|^bindd = SUPER SHIFT, S, Gaming Mode, exec, /usr/local/bin/switch-to-gaming|bindd = SUPER SHIFT, G, Gaming Mode, exec, /usr/local/bin/switch-to-gaming|' "$hypr_bindings_conf"
+        info "Migrated Gaming Mode keybind from Super+Shift+S to Super+Shift+G"
+      else
+        info "Gaming Mode keybind already exists in bindings.conf"
+      fi
     else
       cat >> "$hypr_bindings_conf" << 'HYPR_GAMING'
 
-bindd = SUPER SHIFT, S, Gaming Mode, exec, /usr/local/bin/switch-to-gaming
+bindd = SUPER SHIFT, G, Gaming Mode, exec, /usr/local/bin/switch-to-gaming
 HYPR_GAMING
       info "Added Gaming Mode keybind to bindings.conf"
     fi
@@ -2835,7 +2841,7 @@ HYPR_GAMING
   echo "================================================================"
   echo ""
   echo "  Usage:"
-  echo "    - Press Super+Shift+S in Hyprland to switch to Gaming Mode"
+  echo "    - Press Super+Shift+G in Hyprland to switch to Gaming Mode"
   echo "    - Press Super+Shift+R in Gaming Mode to return to Hyprland"
   echo "    - (Steam's Power > Exit to Desktop also works as fallback)"
   echo ""
@@ -2983,7 +2989,7 @@ verify_installation() {
   local hypr_bindings="$HOME/.config/hypr/bindings.conf"
   if [[ -f "$hypr_bindings" ]]; then
     if grep -q "switch-to-gaming" "$hypr_bindings" 2>/dev/null; then
-      echo "  ✓ Gaming Mode keybind (Super+Shift+S) configured"
+      echo "  ✓ Gaming Mode keybind (Super+Shift+G) configured"
     else
       echo "  ✗ Gaming Mode keybind NOT found in bindings.conf"
       all_ok=false
@@ -3233,7 +3239,7 @@ execute_setup() {
     echo ""
     echo "  Dependencies, GPU configuration, and session switching are ready."
     echo ""
-    echo "  To switch to Gaming Mode: Press Super+Shift+S"
+    echo "  To switch to Gaming Mode: Press Super+Shift+G"
     echo "  To return to Desktop:     Press Super+Shift+R"
     echo ""
   fi
