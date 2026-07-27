@@ -1,14 +1,27 @@
 # DeckShift
 
-**Version 0.1.9** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
+**Version 0.1.15** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
 
 Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift.
 
-> **Target:** [Omarchy](https://omarchy.com) — Arch + Hyprland + SDDM + Walker. DeckShift depends on Omarchy-specific helpers (`omarchy-pkg-add`, `omarchy-restart-walker`, etc.) and is not intended to be cross-distro.
+> **Target:** [Omarchy](https://omarchy.com) — Arch + Hyprland + SDDM. DeckShift depends on Omarchy-specific helpers (`omarchy-pkg-add`, `omarchy-install-gaming-steam`, etc.) and is not intended to be cross-distro. Omarchy 4 (Quickshell / Lua config) is the primary target; pre-4 installs are still handled via the legacy `.conf` fallbacks.
 
 [![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
 
 ## What's New
+
+### v0.1.15 — Omarchy 4 (Quickshell + Lua config) compatibility
+
+Omarchy 4 moved Hyprland onto a Lua config provider (`hyprctl systeminfo` reports `configProvider: lua`) and replaced the Waybar/Walker/Mako desktop stack with the Quickshell-based omarchy-shell. Two things this broke, both fixed:
+
+- **The `Super+Shift+S` keybind never activated on fresh Omarchy 4 installs.** The `*.conf` files under `~/.config/hypr` (including `bindings.conf`, where DeckShift wrote its keybind) are no longer read at all. The installer now writes to `~/.config/hypr/bindings.lua` when it exists — `hl.unbind("SUPER + SHIFT + S")` first (Omarchy's defaults claim that combo, and duplicate Hyprland binds both fire), then `o.bind(...)`. `bindings.conf` remains as a fallback for pre-4 installs.
+- **`deckshift-portal-recovery` silently stopped running after returning from Gaming Mode** — its `exec-once` lived in the now-ignored `autostart.conf`, so the screen-share/portal fix from v0.1.4 was effectively disabled. The installer now wires it via `o.launch_on_start(...)` in `~/.config/hypr/autostart.lua`, with the `autostart.conf` fallback kept for pre-4.
+- `--verify` now checks the Lua files on Omarchy 4 (previously it false-passed against the dead `bindings.conf`) and gained a portal-recovery autostart check.
+- Removed the Walker/elephant integration: `omarchy-restart-walker` and `elephant` no longer exist on Omarchy 4. The elephant `launch_prefix` config step, the Walker refresh after installing the settings launcher, and the clipboard-restart tail of `deckshift-portal-recovery` are all gone. Omarchy 4's shell owns the clipboard and starts fresh with each session, so the stale-clipboard bug those steps fixed can no longer occur. (If you're on pre-4 Omarchy and rely on the clipboard fix, stay on v0.1.13.)
+
+Re-running `./deckshift.sh` on an existing install migrates the keybind and autostart wiring to the Lua files automatically.
+
+*(v0.1.14 was an unreleased keybind change that was reverted; the version number is skipped.)*
 
 ### v0.1.13 — Pacman hook keeps gamescope's cap_sys_nice across upgrades
 
@@ -94,7 +107,7 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 
 ## Settings TUI
 
-After install, launch `DeckShift Settings` from Walker (or run `deckshift-settings` directly) to change Gaming Mode display settings without editing config files:
+After install, launch `DeckShift Settings` from the app menu (`Super+Space`) — or run `deckshift-settings` directly — to change Gaming Mode display settings without editing config files:
 
 | Option | What it sets in `gamescope-session-plus.conf` |
 |---|---|
@@ -142,7 +155,7 @@ chmod +x deckshift.sh
 
 The installer is fully interactive and walks you through each step.
 
-After install, open `DeckShift Settings` from Walker and pick:
+After install, open `DeckShift Settings` from the app menu (`Super+Space`) and pick:
 
 - A monitor
 - A resolution / refresh rate
@@ -157,7 +170,7 @@ Save, then `Super+Shift+S` to launch Gaming Mode.
 | Enter Gaming Mode | `Super + Shift + S` |
 | Return to Desktop | `Super + Shift + R` *(global keybind monitor catches it inside Gamescope)* |
 | Return to Desktop (alternative) | Steam → Power → **Switch to Desktop** |
-| Open settings | Walker → `DeckShift Settings`, or run `deckshift-settings` |
+| Open settings | App menu (`Super+Space`) → `DeckShift Settings`, or run `deckshift-settings` |
 
 ### Command-Line Options
 
@@ -281,14 +294,14 @@ Package installs use Omarchy's `omarchy-pkg-add` (idempotent, double-checks pacm
 | Path | Purpose |
 |---|---|
 | `~/.config/environment.d/gamescope-session-plus.conf` | Gamescope session config (display + GPU keys) — managed via the Settings TUI |
-| `~/.config/hypr/bindings.conf` | Hyprland keybind for `Super+Shift+S` (appended) |
+| `~/.config/hypr/bindings.lua` | Hyprland keybind for `Super+Shift+S` (appended; `bindings.conf` on pre-Omarchy-4) |
 | `~/.cache/deckshift/saved-state` | Pre-Gaming-Mode CPU governor + power profile (created on entry, cleaned up on exit) |
 
 #### Settings TUI
 | Path | Purpose |
 |---|---|
 | `/usr/local/bin/deckshift-settings` | Gum-based TUI for Gaming Mode display + GPU settings |
-| `/usr/share/applications/deckshift-settings.desktop` | Walker launcher (floats via Omarchy's `TUI.float` windowrule) |
+| `/usr/share/applications/deckshift-settings.desktop` | App menu launcher (floats via Omarchy's `TUI.float` windowrule) |
 
 ## How It Works
 
@@ -488,11 +501,11 @@ See [Recovery from a Black Screen](#recovery-from-a-black-screen) for how to get
 - Check PipeWire config exists: `cat /etc/pipewire/pipewire.conf.d/10-gaming-latency.conf`
 - Try lower quantum: edit the config and set `default.clock.min-quantum = 128`
 
-**Screen sharing in Chromium / Firefox is broken after returning from Gaming Mode (only "Share a tab" works) — and/or clipboard is dead**
+**Screen sharing in Chromium / Firefox is broken after returning from Gaming Mode (only "Share a tab" works)**
 
-Both symptoms have the same root cause: `xdg-desktop-portal-hyprland` and Walker's `elephant.service` (the clipboard listener) are still bound to the killed Hyprland instance after the SDDM restart. Tab capture in Chromium works because it bypasses the portal entirely. Clipboard listening, screen capture, and window capture all go through services that need to be reattached to the live compositor.
+Root cause: `xdg-desktop-portal-hyprland` (and the pipewire stack behind it) is still bound to the killed Hyprland instance after the SDDM restart. Tab capture in Chromium works because it bypasses the portal entirely; screen and window capture go through services that need to be reattached to the live compositor. (On pre-4 Omarchy the same stale-socket problem also killed the clipboard via Walker's `elephant.service`; Omarchy 4's shell starts fresh each session, so the clipboard is unaffected there.)
 
-DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery` (autostarted from `~/.config/hypr/autostart.conf`). If you installed before this fix, re-run `./deckshift.sh` to install the helper, or run the recovery manually:
+DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery`, autostarted from `~/.config/hypr/autostart.lua` (Omarchy 4) or `autostart.conf` (pre-4). **If you installed before v0.1.15 and are on Omarchy 4, re-run `./deckshift.sh`** — the old `autostart.conf` wiring is ignored by Omarchy 4's Lua config provider, so the helper never ran. You can also run the recovery manually:
 
 ```bash
 touch /tmp/.deckshift-just-returned && /usr/local/bin/deckshift-portal-recovery
@@ -554,7 +567,7 @@ sudo pkill -f steam-library-mount
 # Remove scripts
 sudo rm -f /usr/local/bin/{switch-to-gaming,switch-to-desktop,gamescope-session-nm-wrapper,\
 gaming-session-switch,gaming-keybind-monitor,gamescope-nm-start,gamescope-nm-stop,\
-steam-library-mount,deckshift-settings}
+steam-library-mount,deckshift-settings,deckshift-portal-recovery}
 sudo rm -f /usr/lib/os-session-select
 sudo rm -rf /usr/local/lib/gamescope-nvidia
 
@@ -570,6 +583,7 @@ sudo rm -f /etc/polkit-1/rules.d/50-gamescope-networkmanager.rules
 sudo rm -f /etc/polkit-1/rules.d/50-udisks-gaming.rules
 sudo rm -f /etc/udev/rules.d/99-gaming-performance.rules
 sudo rm -f /etc/security/limits.d/99-gaming-memlock.conf
+sudo rm -f /usr/share/libalpm/hooks/deckshift-gamescope-cap.hook
 
 # Remove configs
 sudo rm -f /etc/sddm.conf.d/zz-gaming-session.conf
@@ -584,8 +598,13 @@ rm -f ~/.config/environment.d/gamescope-session-plus.conf
 rm -rf ~/.cache/deckshift
 sudo rm -f /usr/share/applications/deckshift-settings.desktop
 
-# Strip the Hyprland keybind line
+# Strip the Hyprland keybind + portal-recovery autostart lines
+# Omarchy 4 (Lua config):
+sed -i '/switch-to-gaming/d; /SUPER + SHIFT + S/d' ~/.config/hypr/bindings.lua
+sed -i '/deckshift-portal-recovery/d' ~/.config/hypr/autostart.lua
+# Pre-4 Omarchy (.conf config):
 sed -i '/switch-to-gaming/d' ~/.config/hypr/bindings.conf
+sed -i '/deckshift-portal-recovery/d' ~/.config/hypr/autostart.conf
 
 # Reload polkit/udev
 sudo systemctl restart polkit

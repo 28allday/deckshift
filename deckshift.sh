@@ -3,13 +3,18 @@
 # DeckShift - Steam Deck Mode for Linux + Hyprland
 #
 # Forked from Super-Shift-S-Omarchy-Deck-Mode (v12.27) → renamed Omarchy Deck →
-# renamed DeckShift. Targets Omarchy (Arch + Hyprland + SDDM + Walker). Extended
-# with:
+# renamed DeckShift. Targets Omarchy (Arch + Hyprland + SDDM). Extended with:
 #   - NVIDIA GSP-aware driver branch selection (legacy 580xx for Pascal/Maxwell)
 #   - omarchy-pkg-add idempotent package installs
 #   - Optional Xbox Bluetooth controller support (xpadneo-dkms)
 #   - Intel GPU support (Iris Xe / Arc / iGPU)
-#   - Settings TUI launched from Walker (deckshift-settings)
+#   - Settings TUI launched from the app menu (deckshift-settings)
+#
+# Omarchy 4 note: Hyprland now runs on Omarchy's Lua config provider — the
+# *.conf files under ~/.config/hypr (bindings.conf, autostart.conf, ...) are
+# NOT read any more. Keybind and autostart wiring below prefers the .lua
+# override files when present and falls back to the legacy .conf files on
+# pre-4 installs.
 #
 # This script transforms an Omarchy (Arch Linux + Hyprland) desktop into a
 # dual-mode system: Desktop Mode (Hyprland) and Gaming Mode (Steam Big Picture
@@ -34,7 +39,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.13"
+DECKSHIFT_VERSION="0.1.15"
 
 # Resolve the directory this script lives in so we can find sibling files like
 # bin/deckshift-settings and applications/deckshift-settings.desktop when
@@ -1086,46 +1091,6 @@ EOF
   fi
 }
 
-# Configures the Elephant app launcher (used in Omarchy) to launch desktop
-# applications through uwsm-app. UWSM (Universal Wayland Session Manager)
-# ensures apps are properly associated with the Wayland session, which
-# prevents issues with apps losing track of their display server.
-configure_elephant_launcher() {
-  local cfg="$HOME/.config/elephant/desktopapplications.toml"
-  if [[ ! -f "$cfg" ]]; then
-    return 0
-  fi
-  if ! command -v uwsm-app >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if grep -q '^launch_prefix[[:space:]]*=[[:space:]]*"uwsm-app --"' "$cfg" 2>/dev/null; then
-    return 0
-  fi
-
-  if grep -q '^launch_prefix[[:space:]]*=' "$cfg" 2>/dev/null; then
-    sed -i 's|^launch_prefix[[:space:]]*=.*|launch_prefix = "uwsm-app --"|' "$cfg"
-  else
-    echo 'launch_prefix = "uwsm-app --"' >> "$cfg"
-  fi
-  info "Configured Elephant desktopapplications launch_prefix (uwsm-app)"
-  restart_elephant_walker
-}
-
-# Restarts the Elephant/Walker launcher service so config changes take
-# effect immediately without requiring a logout.
-restart_elephant_walker() {
-  if ! systemctl --user show-environment >/dev/null 2>&1; then
-    return 0
-  fi
-  if command -v omarchy-restart-walker >/dev/null 2>&1; then
-    omarchy-restart-walker >/dev/null 2>&1 || true
-    return 0
-  fi
-  systemctl --user restart elephant.service >/dev/null 2>&1 || true
-  systemctl --user restart app-walker@autostart.service >/dev/null 2>&1 || true
-}
-
 # Installs the core packages that the Gaming Mode scripts themselves need
 # (as opposed to Steam's dependencies which are handled separately).
 # These include:
@@ -1159,7 +1124,6 @@ setup_requirements() {
   setup_performance_permissions
   setup_fcitx_silence
   setup_shader_cache
-  configure_elephant_launcher
 
   if [[ "${PERFORMANCE_MODE,,}" == "enabled" ]] && command -v gamescope >/dev/null 2>&1; then
     local hook_path="/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook"
@@ -1269,11 +1233,11 @@ setup_xbox_controllers() {
   info "Pair controllers with Super+Ctrl+B (Omarchy Bluetooth menu)"
 }
 
-# Install the Gaming Mode settings TUI and its Walker launcher.
+# Install the Gaming Mode settings TUI and its app menu launcher.
 # The TUI lets users pick monitor / GPU / resolution / refresh rate after
 # install without hand-editing ~/.config/environment.d/gamescope-session-plus.conf.
 # The .desktop file uses Omarchy's TUI.float pattern so it pops up as a floating
-# terminal window from Walker (Super+Space → "DeckShift Settings").
+# terminal window from the app menu (Super+Space → "DeckShift Settings").
 setup_settings_tui() {
   echo ""
   echo "================================================================"
@@ -1297,21 +1261,14 @@ setup_settings_tui() {
   info "Installing settings TUI to $tui_dst"
   sudo install -m 0755 "$tui_src" "$tui_dst" || die "Failed to install settings TUI"
 
-  info "Installing Walker launcher to $desktop_dst"
+  info "Installing app launcher entry to $desktop_dst"
   sudo install -m 0644 "$desktop_src" "$desktop_dst" || die "Failed to install desktop entry"
 
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications 2>/dev/null || true
   fi
 
-  # Refresh Walker so the new entry shows up immediately. omarchy-restart-walker
-  # handles the elephant.service + walker autostart restart for us; without
-  # this, the entry only appears after the next Walker restart / login.
-  if command -v omarchy-restart-walker >/dev/null 2>&1; then
-    omarchy-restart-walker 2>/dev/null || true
-  fi
-
-  info "Settings TUI installed — launch from Walker (Super+Space → 'DeckShift Settings')"
+  info "Settings TUI installed — launch from the app menu (Super+Space → 'DeckShift Settings')"
 }
 
 # ==============================================================================
@@ -1473,7 +1430,7 @@ setup_session_switching() {
   user_home=$(eval echo "~$current_user")
 
   # GPU detection only — the installer no longer chooses a monitor, resolution
-  # or refresh rate. Those are user choices, made later via Walker → "DeckShift
+  # or refresh rate. Those are user choices, made later via the app menu → "DeckShift
   # Settings". This avoids stale OUTPUT_CONNECTOR values when displays are
   # unplugged and lets the user pick whatever fits their setup.
   local -a dgpu_monitors=()
@@ -1532,7 +1489,7 @@ setup_session_switching() {
 
   info "Found $dgpu_type on $dgpu_card"
   info "Display selection (monitor / resolution / refresh) is left to the user."
-  info "After install, launch Walker → 'DeckShift Settings' to configure."
+  info "After install, open the app menu (Super+Space) → 'DeckShift Settings' to configure."
 
   info "Checking for old custom session files to clean up..."
 
@@ -1986,7 +1943,7 @@ UDISKS_POLKIT
   # The installer writes only GPU-specific and static keys here. Display keys
   # (SCREEN_WIDTH, SCREEN_HEIGHT, CUSTOM_REFRESH_RATES, OUTPUT_CONNECTOR) are
   # NOT written by the installer — they are owned by the user and managed via
-  # the settings TUI (Walker → "DeckShift Settings"). This keeps existing user
+  # the settings TUI (app menu → "DeckShift Settings"). This keeps existing user
   # selections intact across re-runs and avoids preselecting values that may
   # not match the user's setup.
   #
@@ -2598,8 +2555,10 @@ KEYBIND_MONITOR
   # screencast portal would bind to nothing. We now (a) push live session
   # env into D-Bus + systemd --user so portals activate against the new
   # Wayland socket, (b) stop portals first, (c) restart pipewire and wait
-  # for the graph, (d) start portals last, (e) restart Walker/elephant so
-  # the clipboard listener reattaches to the live Wayland socket too.
+  # for the graph, (d) start portals last. (Pre-Omarchy-4 versions also
+  # restarted Walker/elephant to reattach the clipboard listener; Omarchy 4's
+  # omarchy-shell owns the clipboard and starts fresh with each session, so
+  # that step is gone.)
   info "Creating portal recovery helper..."
   local portal_recovery="/usr/local/bin/deckshift-portal-recovery"
 
@@ -2634,18 +2593,28 @@ sleep 2
 
 # Now bring portals up cleanly.
 systemctl --user start xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
-
-# Walker (elephant) holds the clipboard listener, which is also bound to the
-# dead Hyprland's Wayland socket and stays broken until restarted.
-omarchy-restart-walker >/dev/null 2>&1 || true
 PORTAL_RECOVERY
 
   sudo chmod +x "$portal_recovery"
   info "Created $portal_recovery"
 
-  # Hyprland autostart hook for portal recovery
+  # Hyprland autostart hook for portal recovery. Omarchy 4's Lua config
+  # provider ignores autostart.conf, so wire through autostart.lua when it
+  # exists; fall back to the legacy exec-once on pre-4 installs.
+  local hypr_autostart_lua="${user_home}/.config/hypr/autostart.lua"
   local hypr_autostart="${user_home}/.config/hypr/autostart.conf"
-  if [[ -f "$hypr_autostart" ]]; then
+  if [[ -f "$hypr_autostart_lua" ]]; then
+    if grep -q "deckshift-portal-recovery" "$hypr_autostart_lua" 2>/dev/null; then
+      info "Portal recovery already wired into autostart.lua"
+    else
+      sudo -u "$current_user" tee -a "$hypr_autostart_lua" > /dev/null << 'HYPR_PORTAL_LUA'
+
+-- DeckShift — restart xdg-desktop-portal stack after returning from Gaming Mode
+o.launch_on_start("/usr/local/bin/deckshift-portal-recovery")
+HYPR_PORTAL_LUA
+      info "Added portal recovery launch_on_start to $hypr_autostart_lua"
+    fi
+  elif [[ -f "$hypr_autostart" ]]; then
     if grep -q "deckshift-portal-recovery" "$hypr_autostart" 2>/dev/null; then
       info "Portal recovery already wired into autostart.conf"
     else
@@ -2657,8 +2626,8 @@ HYPR_PORTAL
       info "Added portal recovery exec-once to $hypr_autostart"
     fi
   else
-    warn "autostart.conf not found at $hypr_autostart — portal recovery not auto-wired"
-    warn "Add manually: exec-once = /usr/local/bin/deckshift-portal-recovery"
+    warn "No autostart.lua or autostart.conf under ${user_home}/.config/hypr — portal recovery not auto-wired"
+    warn "Add manually to autostart.lua: o.launch_on_start(\"/usr/local/bin/deckshift-portal-recovery\")"
   fi
 
   # SDDM Session Switching Config
@@ -2768,12 +2737,25 @@ SUDOERS_SWITCH
   fi
 
   info "Adding Hyprland keybind..."
+  local hypr_bindings_lua="${user_home}/.config/hypr/bindings.lua"
   local hypr_bindings_conf="${user_home}/.config/hypr/bindings.conf"
 
-  if [[ ! -f "$hypr_bindings_conf" ]]; then
-    warn "bindings.conf not found at $hypr_bindings_conf - skipping keybind setup"
-    warn "You can manually add: bindd = SUPER SHIFT, S, Gaming Mode, exec, /usr/local/bin/switch-to-gaming"
-  else
+  if [[ -f "$hypr_bindings_lua" ]]; then
+    # Omarchy 4: bindings live in Lua; bindings.conf is ignored. Omarchy's
+    # defaults claim SUPER+SHIFT+S, and duplicate Hyprland binds BOTH fire,
+    # so the default must be unbound before taking the key.
+    if grep -q "switch-to-gaming" "$hypr_bindings_lua" 2>/dev/null; then
+      info "Gaming Mode keybind already exists in bindings.lua"
+    else
+      sudo -u "$current_user" tee -a "$hypr_bindings_lua" > /dev/null << 'HYPR_GAMING_LUA'
+
+-- DeckShift — reclaim SUPER+SHIFT+S from the Omarchy default, bind Gaming Mode
+hl.unbind("SUPER + SHIFT + S")
+o.bind("SUPER + SHIFT + S", "Gaming Mode", "/usr/local/bin/switch-to-gaming")
+HYPR_GAMING_LUA
+      info "Added Gaming Mode keybind to bindings.lua"
+    fi
+  elif [[ -f "$hypr_bindings_conf" ]]; then
     if grep -q "switch-to-gaming" "$hypr_bindings_conf" 2>/dev/null; then
       info "Gaming Mode keybind already exists in bindings.conf"
     else
@@ -2783,6 +2765,9 @@ bindd = SUPER SHIFT, S, Gaming Mode, exec, /usr/local/bin/switch-to-gaming
 HYPR_GAMING
       info "Added Gaming Mode keybind to bindings.conf"
     fi
+  else
+    warn "No bindings.lua or bindings.conf under ${user_home}/.config/hypr - skipping keybind setup"
+    warn "Add manually to bindings.lua: o.bind(\"SUPER + SHIFT + S\", \"Gaming Mode\", \"/usr/local/bin/switch-to-gaming\")"
   fi
 
   info "Steam compatibility scripts provided by gamescope-session-steam-git"
@@ -2851,7 +2836,7 @@ HYPR_GAMING
   echo "    - /usr/local/bin/switch-to-gaming"
   echo "    - /usr/local/bin/switch-to-desktop"
   echo "    - /usr/local/bin/gaming-keybind-monitor (Super+Shift+R)"
-  echo "    - ~/.config/hypr/bindings.conf (keybind added)"
+  echo "    - ~/.config/hypr/bindings.lua (keybind added; bindings.conf on pre-Omarchy-4)"
   echo ""
   echo "  NetworkManager integration (Steam network access):"
   echo "    - /usr/local/bin/gamescope-nm-start"
@@ -2941,7 +2926,7 @@ verify_installation() {
     ["/etc/pipewire/pipewire.conf.d/10-gaming-latency.conf"]="644:PipeWire low-latency"
     ["/etc/environment.d/99-shader-cache.conf"]="644:Shader cache config"
     ["/usr/local/bin/deckshift-settings"]="755:Gaming Mode settings TUI"
-    ["/usr/share/applications/deckshift-settings.desktop"]="644:Walker launcher for settings TUI"
+    ["/usr/share/applications/deckshift-settings.desktop"]="644:app menu launcher for settings TUI"
     ["/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook"]="644:Pacman hook re-applies cap_sys_nice on gamescope upgrade (optional)"
   )
   echo "  FILE STATUS:"
@@ -2980,8 +2965,16 @@ verify_installation() {
   echo ""
   echo "  HYPRLAND KEYBIND:"
   echo "  -----------------"
+  local hypr_bindings_lua="$HOME/.config/hypr/bindings.lua"
   local hypr_bindings="$HOME/.config/hypr/bindings.conf"
-  if [[ -f "$hypr_bindings" ]]; then
+  if [[ -f "$hypr_bindings_lua" ]]; then
+    if grep -q "switch-to-gaming" "$hypr_bindings_lua" 2>/dev/null; then
+      echo "  ✓ Gaming Mode keybind (Super+Shift+S) configured in bindings.lua"
+    else
+      echo "  ✗ Gaming Mode keybind NOT found in bindings.lua (Omarchy 4 ignores bindings.conf)"
+      all_ok=false
+    fi
+  elif [[ -f "$hypr_bindings" ]]; then
     if grep -q "switch-to-gaming" "$hypr_bindings" 2>/dev/null; then
       echo "  ✓ Gaming Mode keybind (Super+Shift+S) configured"
     else
@@ -2989,7 +2982,26 @@ verify_installation() {
       all_ok=false
     fi
   else
-    echo "  ⚠ bindings.conf not found - keybind needs manual setup"
+    echo "  ⚠ no bindings.lua or bindings.conf - keybind needs manual setup"
+  fi
+
+  echo ""
+  echo "  PORTAL RECOVERY AUTOSTART:"
+  echo "  --------------------------"
+  local hypr_autostart_lua="$HOME/.config/hypr/autostart.lua"
+  local hypr_autostart="$HOME/.config/hypr/autostart.conf"
+  if [[ -f "$hypr_autostart_lua" ]]; then
+    if grep -q "deckshift-portal-recovery" "$hypr_autostart_lua" 2>/dev/null; then
+      echo "  ✓ portal recovery wired into autostart.lua"
+    else
+      echo "  ✗ portal recovery NOT wired into autostart.lua (Omarchy 4 ignores autostart.conf)"
+      all_ok=false
+    fi
+  elif [[ -f "$hypr_autostart" ]] && grep -q "deckshift-portal-recovery" "$hypr_autostart" 2>/dev/null; then
+    echo "  ✓ portal recovery wired into autostart.conf"
+  else
+    echo "  ✗ portal recovery NOT wired into Hyprland autostart"
+    all_ok=false
   fi
 
   echo ""
@@ -3167,7 +3179,7 @@ verify_installation() {
 #   6. Install script requirements and performance permissions
 #   7. Set up session switching (the big one — all the scripts and configs)
 #   8. Optionally install Xbox Bluetooth controller support (xpadneo)
-#   9. Install the Gaming Mode settings TUI + Walker launcher
+#   9. Install the Gaming Mode settings TUI + app menu launcher
 #  10. Prompt for reboot/relogin if needed
 #  11. Optionally run verification to confirm everything worked
 execute_setup() {

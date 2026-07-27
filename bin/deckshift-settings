@@ -2,7 +2,7 @@
 # ==============================================================================
 # deckshift-settings — Gaming Mode settings TUI
 #
-# Launched from Walker (Super+Space → "DeckShift Settings"). Lets the user
+# Launched from the app menu (Super+Space → "DeckShift Settings"). Lets the user
 # adjust which monitor, GPU, resolution, and refresh rate Gaming Mode uses,
 # without editing ~/.config/environment.d/gamescope-session-plus.conf by hand.
 #
