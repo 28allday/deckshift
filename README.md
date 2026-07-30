@@ -1,6 +1,6 @@
 # DeckShift
 
-**Version 0.1.15** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop.
+**Version 0.2.0** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Alt+G`).
 
 Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift.
 
@@ -9,6 +9,20 @@ Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/
 [![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
 
 ## What's New
+
+### v0.2.0 — Native Omarchy 4 control panel (replaces the settings TUI)
+
+The gum-based `deckshift-settings` TUI is gone, replaced by **`nosignal.deckshift`**, a native omarchy-shell (Quickshell) plugin: a bar icon plus a panel that both configures Gaming Mode and launches it.
+
+- **Everything the TUI did, in the panel** — monitor, resolution, refresh rate, GPU mode and hide-monitor, each a themed dropdown that only offers modes the selected monitor actually reports. Edits stay **buffered** until you press **Save**, and the same over-spec warnings the TUI raised are shown inline.
+- **Launch Gaming Mode from the panel.** A confirm step guards it — entering Gaming Mode restarts SDDM and closes your desktop session, so it should never be one stray click away. If you have unsaved changes the confirm says so explicitly, because Gaming Mode would start with the *last saved* values, not what's on screen. `Super+Shift+S` still works exactly as before.
+- **Live capability data.** Picking a monitor re-derives the resolution and refresh lists from that monitor's mode list on the spot. A connector saved earlier but not currently plugged in is labelled `not connected` rather than silently offering nothing.
+- **Fixed: saved settings never reached the running session.** Both the TUI and the panel write `~/.config/environment.d/gamescope-session-plus.conf`, then nudge systemd so the change applies without a re-login. The TUI called `systemctl --user import-environment KEY`, which copies a variable *from the calling process's environment* — i.e. the value read at login, the one just replaced. It propagated nothing. The panel calls `set-environment KEY=VALUE` instead, which actually pushes the new value.
+- Keys not managed by DeckShift (`ADAPTIVE_SYNC`, `HDR_ENABLED`, anything hand-added) are preserved across saves, as before.
+- Re-running `./deckshift.sh` installs the plugin, wires it into `shell.json` (both `plugins[]` and the bar), adds a `Super+Alt+G` toggle keybind, and removes the old TUI and its app-menu entry. Already-running shells need `omarchy-restart-shell` to pick the panel up.
+- `--verify` gained a control-panel section: plugin files present, registered in `plugins[]` (a plugin on disk but missing there loads its bar icon and then no-ops on every summon), bar icon, and keybind.
+
+**Requires Omarchy 4** for the panel — the installer skips it with a warning on older builds, where Gaming Mode itself still works via the keybinds.
 
 ### v0.1.15 — Omarchy 4 (Quickshell + Lua config) compatibility
 
@@ -105,9 +119,9 @@ Re-running `./deckshift.sh` on an existing install migrates the keybind and auto
 - Intel GPU support (Iris Xe, Arc) with a generation warning for older Gen8/9.
 - Multilib check removed (Omarchy ships with multilib enabled).
 
-## Settings TUI
+## Control panel
 
-After install, launch `DeckShift Settings` from the app menu (`Super+Space`) — or run `deckshift-settings` directly — to change Gaming Mode display settings without editing config files:
+After install, open the panel from the **game-controller icon in your bar**, press `Super+Alt+G`, or run `omarchy-shell shell toggle nosignal.deckshift`. It changes Gaming Mode display settings without editing config files:
 
 | Option | What it sets in `gamescope-session-plus.conf` |
 |---|---|
@@ -121,7 +135,15 @@ After install, launch `DeckShift Settings` from the app menu (`Super+Space`) —
 
 The `[hybrid-*]` options only appear when the relevant GPU pair is detected.
 
-The TUI launches as a floating window via Omarchy's `TUI.float` pattern. Selections are **buffered** — nothing is written to disk until you pick **Save and exit**. **Cancel** discards unsaved changes. Saved changes apply next time you enter Gaming Mode (`Super+Shift+S`).
+Each dropdown lists what the selected monitor actually reports as `supported`, followed by common presets — a preset the monitor can't do is labelled as such rather than hidden, since EDID data is occasionally wrong and forcing a mode is sometimes the right call.
+
+Selections are **buffered**: nothing is written to disk until you press **Save**, and the header shows `unsaved changes` until you do. Saved values apply to the next Gaming Mode launch — no re-login needed.
+
+**Launch Gaming Mode** does the same thing as `Super+Shift+S`, behind a confirm step (it closes your desktop session). With unsaved changes pending, the confirm warns that Gaming Mode will use the last *saved* settings.
+
+Keyboard: `Esc` close · `r` refresh · `s` save · `g` launch · `Tab` and arrows move between controls.
+
+> **Requires Omarchy 4.** The panel is an omarchy-shell (Quickshell) plugin. On pre-4 installs the installer skips it and Gaming Mode is driven by the keybinds alone.
 
 ## What It Does
 
@@ -139,7 +161,7 @@ Switching between modes is seamless — SDDM handles session transitions, and yo
   - Intel Arc (Alchemist, Battlemage): well-supported
   - Tiger Lake / Alder Lake Iris Xe: playable for indies / older AAA
   - Older Gen8/9 Intel (Skylake, Kaby Lake): expect slow/glitchy — installer warns and asks before continuing
-  - Hybrid laptops (NVIDIA + iGPU, AMD dGPU + iGPU): use the corresponding `[hybrid-*]` GPU mode in the Settings TUI
+  - Hybrid laptops (NVIDIA + iGPU, AMD dGPU + iGPU): use the corresponding `[hybrid-*]` GPU mode in the control panel
 - **AUR Helper**: yay or paru (for ChimeraOS session packages)
 
 > **Note**: This script targets Omarchy and its stack (Hyprland, SDDM, iwd, UWSM, PipeWire). It works on other Arch + Hyprland setups with light tweaks, but isn't tested there.
@@ -155,13 +177,15 @@ chmod +x deckshift.sh
 
 The installer is fully interactive and walks you through each step.
 
-After install, open `DeckShift Settings` from the app menu (`Super+Space`) and pick:
+After install, open the control panel (bar icon or `Super+Alt+G`) and pick:
 
 - A monitor
 - A resolution / refresh rate
 - A GPU mode — for hybrid laptops, prefer `[hybrid-nvidia]` or `[hybrid-amd]` over the direct options
 
-Save, then `Super+Shift+S` to launch Gaming Mode.
+Press **Save**, then **Launch Gaming Mode** (or `Super+Shift+S`).
+
+> Already-running shells won't show the panel until you run `omarchy-restart-shell` once.
 
 ## Usage
 
@@ -170,7 +194,8 @@ Save, then `Super+Shift+S` to launch Gaming Mode.
 | Enter Gaming Mode | `Super + Shift + S` |
 | Return to Desktop | `Super + Shift + R` *(global keybind monitor catches it inside Gamescope)* |
 | Return to Desktop (alternative) | Steam → Power → **Switch to Desktop** |
-| Open settings | App menu (`Super+Space`) → `DeckShift Settings`, or run `deckshift-settings` |
+| Open control panel | Bar icon, `Super + Alt + G`, or `omarchy-shell shell toggle nosignal.deckshift` |
+| Launch Gaming Mode from panel | **Launch Gaming Mode** button (confirms first) |
 
 ### Command-Line Options
 
@@ -200,7 +225,7 @@ If Gaming Mode (or anything else) leaves you on a black screen, here's the order
 5. **From SSH** (from another machine on the network) the same commands work — handy if the box is wedged but its network is alive.
 6. **Last resort:** hold the power button. Safe in this situation; you didn't cause the freeze, gamescope did.
 
-If you keep ending up on a black screen, see [Troubleshooting](#troubleshooting) — most often it's a GPU↔connector mismatch on hybrid laptops (e.g. NVIDIA mode targeting `eDP-1`, which on a hybrid is wired to the iGPU). Switch the GPU mode in DeckShift Settings to `[hybrid-nvidia]` and pick `eDP-1` for the monitor.
+If you keep ending up on a black screen, see [Troubleshooting](#troubleshooting) — most often it's a GPU↔connector mismatch on hybrid laptops (e.g. NVIDIA mode targeting `eDP-1`, which on a hybrid is wired to the iGPU). Switch the GPU mode in the control panel to `[hybrid-nvidia]` and pick `eDP-1` for the monitor.
 
 ## What Gets Installed
 
@@ -230,7 +255,7 @@ The correct NVIDIA driver branch is auto-selected via Omarchy's `omarchy-hw-nvid
 
 **Other Requirements**
 - `python-evdev` — for the keyboard shortcut monitor
-- `gum`, `jq` — for the Settings TUI
+- `jq` — for the control panel's hardware/config reads
 - `ntfs-3g` — for mounting NTFS game drives
 - `udisks2` — for external drive auto-mounting
 - `xcb-util-cursor`, `libcap`, `curl`, `pciutils`
@@ -293,15 +318,20 @@ Package installs use Omarchy's `omarchy-pkg-add` (idempotent, double-checks pacm
 #### User Config
 | Path | Purpose |
 |---|---|
-| `~/.config/environment.d/gamescope-session-plus.conf` | Gamescope session config (display + GPU keys) — managed via the Settings TUI |
+| `~/.config/environment.d/gamescope-session-plus.conf` | Gamescope session config (display + GPU keys) — managed via the control panel |
 | `~/.config/hypr/bindings.lua` | Hyprland keybind for `Super+Shift+S` (appended; `bindings.conf` on pre-Omarchy-4) |
 | `~/.cache/deckshift/saved-state` | Pre-Gaming-Mode CPU governor + power profile (created on entry, cleaned up on exit) |
+| `~/.config/omarchy/plugins/nosignal.deckshift/` | Control panel plugin (manifest + QML) |
+| `~/.config/omarchy/shell.json` | Panel registered in `plugins[]` and the bar layout (backed up to `shell.json.bak.deckshift`) |
 
-#### Settings TUI
+#### Control panel
 | Path | Purpose |
 |---|---|
-| `/usr/local/bin/deckshift-settings` | Gum-based TUI for Gaming Mode display + GPU settings |
-| `/usr/share/applications/deckshift-settings.desktop` | App menu launcher (floats via Omarchy's `TUI.float` windowrule) |
+| `~/.config/omarchy/plugins/nosignal.deckshift/manifest.json` | Plugin manifest (panel + bar-widget kinds) |
+| `~/.config/omarchy/plugins/nosignal.deckshift/Panel.qml` | The control panel itself |
+| `~/.config/omarchy/plugins/nosignal.deckshift/BarWidget.qml` | Bar icon that toggles the panel |
+
+Installed per-user, not system-wide: `~/.config/omarchy/plugins` is the only directory omarchy-shell scans for third-party plugins.
 
 ## How It Works
 
@@ -363,9 +393,9 @@ The installer detects:
 - **AMD APU**: integrated GPU codenames (Phoenix, Rembrandt, Van Gogh, etc.)
 - **NVIDIA**: lspci, configures `nvidia-drm.modeset=1` if missing, picks `nvidia-utils` vs `nvidia-580xx-utils` via Omarchy's GSP-firmware detection
 - **Intel (Arc / Iris Xe / iGPU)**: `i915` / `xe` kernel drivers
-- **Hybrid combinations**: detected by the Settings TUI, which surfaces the appropriate `[hybrid-*]` GPU mode
+- **Hybrid combinations**: detected by the control panel, which surfaces the appropriate `[hybrid-*]` GPU mode
 
-The installer itself no longer picks a monitor / resolution / refresh / GPU — those are user choices, made via the Settings TUI after install.
+The installer itself no longer picks a monitor / resolution / refresh / GPU — those are user choices, made via the control panel after install.
 
 ### NetworkManager Integration
 
@@ -412,7 +442,7 @@ VULKAN_ADAPTER=10de:25ac
 GBM_BACKEND=nvidia-drm
 ```
 
-Display keys (`SCREEN_WIDTH`, `SCREEN_HEIGHT`, `CUSTOM_REFRESH_RATES`, `OUTPUT_CONNECTOR`) and hybrid-PRIME env vars are **owned exclusively by the Settings TUI**. Re-running the installer preserves your TUI choices.
+Display keys (`SCREEN_WIDTH`, `SCREEN_HEIGHT`, `CUSTOM_REFRESH_RATES`, `OUTPUT_CONNECTOR`) and hybrid-PRIME env vars are **owned exclusively by the control panel**. Re-running the installer preserves your choices.
 
 **NVIDIA note**: Gamescope on NVIDIA is currently capped at 2560×1440. The TUI flags any higher resolution as unsupported.
 
@@ -438,7 +468,7 @@ DXVK_STATE_CACHE=1
 
 On a hybrid laptop (NVIDIA dGPU + AMD/Intel iGPU), the laptop screen (`eDP-1`) is wired to the iGPU. NVIDIA cannot scan out directly to it — pointing the direct `[nvidia]` mode at `eDP-1` will black-screen.
 
-Use **`[hybrid-nvidia]`** in the Settings TUI instead. Gamescope will run on the iGPU (which owns `eDP-1`) and games inside will render on NVIDIA via PRIME render offload, with the rendered frames flowing back through DMA-BUF for scanout. This is the same architecture Steam Deck uses (just with one GPU).
+Use **`[hybrid-nvidia]`** in the control panel instead. Gamescope will run on the iGPU (which owns `eDP-1`) and games inside will render on NVIDIA via PRIME render offload, with the rendered frames flowing back through DMA-BUF for scanout. This is the same architecture Steam Deck uses (just with one GPU).
 
 ## Bootloader Support
 
@@ -466,7 +496,7 @@ Run the built-in verification to check all files, permissions, packages, and ser
 
 Most likely a hybrid-laptop GPU↔connector mismatch — NVIDIA can't drive the iGPU's display.
 
-- Switch the GPU mode to **`[hybrid-nvidia]`** (or `[hybrid-amd]` for AMD-only hybrids) in DeckShift Settings.
+- Switch the GPU mode to **`[hybrid-nvidia]`** (or `[hybrid-amd]` for AMD-only hybrids) in the control panel.
 - If you only have the laptop screen, that's the only working path — direct NVIDIA mode requires an external display plugged into the dGPU's HDMI/DP output.
 
 See [Recovery from a Black Screen](#recovery-from-a-black-screen) for how to get out of the black-screen state.
@@ -528,7 +558,7 @@ If you're on AC and using Omarchy, this is expected — see the *Performance Mod
 
 **Intel-only system, Gaming Mode is laggy**
 
-- Older Gen8/9 Intel iGPUs (Skylake, Kaby Lake) struggle with Vulkan workloads. Lower the launch resolution via the Settings TUI (`deckshift-settings`) — 720p / 1080p makes a big difference.
+- Older Gen8/9 Intel iGPUs (Skylake, Kaby Lake) struggle with Vulkan workloads. Lower the launch resolution in the control panel — 720p / 1080p makes a big difference.
 - If you have a discrete GPU that should take over, check its driver is loaded: `lspci -k | grep -A2 VGA`
 
 **Gaming Mode launches at 60 Hz even though I picked a higher rate in the TUI**
@@ -567,7 +597,7 @@ sudo pkill -f steam-library-mount
 # Remove scripts
 sudo rm -f /usr/local/bin/{switch-to-gaming,switch-to-desktop,gamescope-session-nm-wrapper,\
 gaming-session-switch,gaming-keybind-monitor,gamescope-nm-start,gamescope-nm-stop,\
-steam-library-mount,deckshift-settings,deckshift-portal-recovery}
+steam-library-mount,deckshift-portal-recovery}
 sudo rm -f /usr/lib/os-session-select
 sudo rm -rf /usr/local/lib/gamescope-nvidia
 
@@ -596,11 +626,22 @@ sudo rm -f /etc/NetworkManager/conf.d/20-unmanaged-systemd.conf
 # Remove user files
 rm -f ~/.config/environment.d/gamescope-session-plus.conf
 rm -rf ~/.cache/deckshift
+
+# Remove the control panel plugin and its shell.json wiring
+rm -rf ~/.config/omarchy/plugins/nosignal.deckshift
+tmp=$(mktemp) && jq 'del(.plugins[]? | select(.id == "nosignal.deckshift"))
+  | .bar.layout |= with_entries(.value |= map(select(.id != "nosignal.deckshift")))' \
+  ~/.config/omarchy/shell.json > "$tmp" && mv "$tmp" ~/.config/omarchy/shell.json
+omarchy-restart-shell
+
+# Pre-v0.2.0 installs also had the settings TUI:
+sudo rm -f /usr/local/bin/deckshift-settings
 sudo rm -f /usr/share/applications/deckshift-settings.desktop
 
 # Strip the Hyprland keybind + portal-recovery autostart lines
 # Omarchy 4 (Lua config):
 sed -i '/switch-to-gaming/d; /SUPER + SHIFT + S/d' ~/.config/hypr/bindings.lua
+sed -i '/nosignal.deckshift/d; /SUPER + ALT + G/d' ~/.config/hypr/bindings.lua
 sed -i '/deckshift-portal-recovery/d' ~/.config/hypr/autostart.lua
 # Pre-4 Omarchy (.conf config):
 sed -i '/switch-to-gaming/d' ~/.config/hypr/bindings.conf

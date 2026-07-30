@@ -8,7 +8,7 @@
 #   - omarchy-pkg-add idempotent package installs
 #   - Optional Xbox Bluetooth controller support (xpadneo-dkms)
 #   - Intel GPU support (Iris Xe / Arc / iGPU)
-#   - Settings TUI launched from the app menu (deckshift-settings)
+#   - Gaming Mode control panel as an omarchy-shell (Quickshell) plugin
 #
 # Omarchy 4 note: Hyprland now runs on Omarchy's Lua config provider — the
 # *.conf files under ~/.config/hypr (bindings.conf, autostart.conf, ...) are
@@ -39,11 +39,15 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.1.15"
+DECKSHIFT_VERSION="0.2.0"
+
+# Plugin id for the omarchy-shell control panel. Must match the "id" in
+# plugins/<id>/manifest.json — the shell keys everything (shell.json entries,
+# IPC target, bar widget registry) off this string.
+DECKSHIFT_PLUGIN_ID="nosignal.deckshift"
 
 # Resolve the directory this script lives in so we can find sibling files like
-# bin/deckshift-settings and applications/deckshift-settings.desktop when
-# the installer is run from the cloned repo.
+# plugins/nosignal.deckshift/ when the installer is run from the cloned repo.
 SCRIPT_DIR=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" &>/dev/null && pwd)
 
 # Load configuration from /etc/gaming-mode.conf (system-wide) or
@@ -1233,42 +1237,137 @@ setup_xbox_controllers() {
   info "Pair controllers with Super+Ctrl+B (Omarchy Bluetooth menu)"
 }
 
-# Install the Gaming Mode settings TUI and its app menu launcher.
-# The TUI lets users pick monitor / GPU / resolution / refresh rate after
-# install without hand-editing ~/.config/environment.d/gamescope-session-plus.conf.
-# The .desktop file uses Omarchy's TUI.float pattern so it pops up as a floating
-# terminal window from the app menu (Super+Space → "DeckShift Settings").
-setup_settings_tui() {
+# Install the DeckShift control panel as an omarchy-shell plugin.
+#
+# Replaces the gum settings TUI that shipped up to v0.1.15. The panel does
+# everything the TUI did — monitor / resolution / refresh rate / GPU /
+# hide-monitor, buffered until Save — and adds a Launch Gaming Mode button, so
+# entering Gaming Mode no longer depends on remembering a keybind.
+#
+# Installed per-user under ~/.config/omarchy/plugins (NOT system-wide): that is
+# the only directory omarchy-shell scans for third-party plugins, and it has to
+# be owned by the user whose shell loads it.
+setup_shell_plugin() {
   echo ""
   echo "================================================================"
-  echo "  GAMING MODE SETTINGS TUI"
+  echo "  GAMING MODE CONTROL PANEL"
   echo "================================================================"
   echo ""
 
-  local tui_src="${SCRIPT_DIR}/bin/deckshift-settings"
-  local desktop_src="${SCRIPT_DIR}/applications/deckshift-settings.desktop"
-  local tui_dst="/usr/local/bin/deckshift-settings"
-  local desktop_dst="/usr/share/applications/deckshift-settings.desktop"
+  local plugin_src="${SCRIPT_DIR}/plugins/${DECKSHIFT_PLUGIN_ID}"
+  local current_user="${SUDO_USER:-$USER}"
+  local user_home
+  user_home=$(getent passwd "$current_user" | cut -d: -f6)
+  local plugin_dir="${user_home}/.config/omarchy/plugins"
+  local plugin_dst="${plugin_dir}/${DECKSHIFT_PLUGIN_ID}"
+  local shell_json="${user_home}/.config/omarchy/shell.json"
 
-  if [[ ! -f "$tui_src" || ! -f "$desktop_src" ]]; then
-    warn "Settings TUI source files not found in ${SCRIPT_DIR} — skipping"
+  if [[ ! -f "${plugin_src}/manifest.json" ]]; then
+    warn "Panel plugin sources not found in ${plugin_src} — skipping"
     return 0
   fi
 
-  info "Installing gum + jq (TUI dependencies)..."
-  omarchy-pkg-add gum jq || die "Failed to install settings TUI dependencies"
-
-  info "Installing settings TUI to $tui_dst"
-  sudo install -m 0755 "$tui_src" "$tui_dst" || die "Failed to install settings TUI"
-
-  info "Installing app launcher entry to $desktop_dst"
-  sudo install -m 0644 "$desktop_src" "$desktop_dst" || die "Failed to install desktop entry"
-
-  if command -v update-desktop-database >/dev/null 2>&1; then
-    sudo update-desktop-database /usr/share/applications 2>/dev/null || true
+  if ! command -v omarchy-shell >/dev/null 2>&1; then
+    warn "omarchy-shell not found — this build of Omarchy predates the Quickshell"
+    warn "desktop, so the control panel can't be installed. Gaming Mode itself is"
+    warn "unaffected: use Super+Shift+S to enter and Super+Shift+R to return."
+    return 0
   fi
 
-  info "Settings TUI installed — launch from the app menu (Super+Space → 'DeckShift Settings')"
+  info "Installing jq (panel dependency)..."
+  omarchy-pkg-add jq || die "Failed to install jq"
+
+  info "Installing panel plugin to $plugin_dst"
+  sudo -u "$current_user" mkdir -p "$plugin_dir" || die "Failed to create plugins directory"
+  # Copy, don't symlink: the installer's checkout may be a temporary clone.
+  sudo -u "$current_user" rm -rf "$plugin_dst"
+  sudo -u "$current_user" cp -r "$plugin_src" "$plugin_dst" || die "Failed to install panel plugin"
+
+  # Wire the plugin into shell.json by editing it directly rather than calling
+  # `omarchy plugin enable`. Two reasons: enable talks to a RUNNING shell over
+  # IPC (the installer may run from a tty, or before the shell exists), and it
+  # only appends the bar widget — the panel needs its own plugins[] entry or
+  # every summon silently no-ops.
+  if [[ -f "$shell_json" ]]; then
+    info "Wiring panel into shell.json"
+    sudo -u "$current_user" cp "$shell_json" "${shell_json}.bak.deckshift" 2>/dev/null || true
+    local tmp_json
+    tmp_json=$(sudo -u "$current_user" mktemp) || die "Failed to create temp file"
+    # Piped through `tee` as the user rather than a plain `>` redirect: the
+    # redirect would be performed by this shell (root when the installer is run
+    # under sudo), which is exactly what SC2024 warns about.
+    if sudo -u "$current_user" jq --arg id "$DECKSHIFT_PLUGIN_ID" '
+        .plugins = ((.plugins // [])
+          | if any(.id == $id) then . else . + [{"id": $id}] end)
+        | .bar.layout.right = ((.bar.layout.right // [])
+          | if any(.id == $id) then . else [{"id": $id}] + . end)
+      ' "$shell_json" | sudo -u "$current_user" tee "$tmp_json" >/dev/null && [[ -s "$tmp_json" ]]; then
+      sudo -u "$current_user" cp "$tmp_json" "$shell_json"
+      info "Panel entry + bar icon added to shell.json"
+    else
+      warn "Couldn't edit shell.json — add these yourself:"
+      warn "  plugins[]        : {\"id\": \"${DECKSHIFT_PLUGIN_ID}\"}"
+      warn "  bar.layout.right : {\"id\": \"${DECKSHIFT_PLUGIN_ID}\"}"
+    fi
+    sudo -u "$current_user" rm -f "$tmp_json"
+  else
+    warn "No shell.json at $shell_json — start omarchy-shell once, then re-run this installer"
+  fi
+
+  # Pick up the new plugin folder. Harmless (and silent) when no shell is running.
+  sudo -u "$current_user" omarchy plugin rescan >/dev/null 2>&1 || true
+
+  # Panel toggle keybind. Same Lua-first, .conf-fallback rule as the Gaming Mode
+  # bind above. SUPER+ALT+G is unclaimed by the Omarchy defaults, so unlike
+  # SUPER+SHIFT+S it needs no hl.unbind() first.
+  local hypr_bindings_lua="${user_home}/.config/hypr/bindings.lua"
+  local hypr_bindings_conf="${user_home}/.config/hypr/bindings.conf"
+  if [[ -f "$hypr_bindings_lua" ]]; then
+    if grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
+      info "Panel keybind already exists in bindings.lua"
+    else
+      sudo -u "$current_user" tee -a "$hypr_bindings_lua" > /dev/null << HYPR_PANEL_LUA
+
+-- DeckShift — toggle the Gaming Mode control panel
+o.bind("SUPER + ALT + G", "Gaming Mode panel", "omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}")
+HYPR_PANEL_LUA
+      info "Added panel keybind (Super+Alt+G) to bindings.lua"
+    fi
+  elif [[ -f "$hypr_bindings_conf" ]]; then
+    if grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_conf" 2>/dev/null; then
+      info "Panel keybind already exists in bindings.conf"
+    else
+      cat >> "$hypr_bindings_conf" << HYPR_PANEL
+
+bindd = SUPER ALT, G, Gaming Mode panel, exec, omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}
+HYPR_PANEL
+      info "Added panel keybind (Super+Alt+G) to bindings.conf"
+    fi
+  else
+    warn "No bindings.lua or bindings.conf under ${user_home}/.config/hypr - skipping panel keybind"
+  fi
+
+  info "Control panel installed — open it from the bar icon or Super+Alt+G"
+  info "Already-running shells need 'omarchy-restart-shell' to pick it up"
+}
+
+# Remove the pre-v0.2.0 settings TUI. Left behind by an upgrade it would show a
+# second, stale "DeckShift Settings" entry in the app menu next to the panel —
+# and it still writes with import-environment, which never propagated an edit.
+remove_legacy_settings_tui() {
+  local tui="/usr/local/bin/deckshift-settings"
+  local desktop="/usr/share/applications/deckshift-settings.desktop"
+  local removed=0
+
+  [[ -e "$tui" ]] && { sudo rm -f "$tui" && removed=1; }
+  [[ -e "$desktop" ]] && { sudo rm -f "$desktop" && removed=1; }
+
+  if [[ $removed -eq 1 ]]; then
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      sudo update-desktop-database /usr/share/applications 2>/dev/null || true
+    fi
+    info "Removed the old settings TUI — the control panel replaces it"
+  fi
 }
 
 # ==============================================================================
@@ -2925,8 +3024,6 @@ verify_installation() {
     ["/etc/security/limits.d/99-gaming-memlock.conf"]="644:Memlock limits"
     ["/etc/pipewire/pipewire.conf.d/10-gaming-latency.conf"]="644:PipeWire low-latency"
     ["/etc/environment.d/99-shader-cache.conf"]="644:Shader cache config"
-    ["/usr/local/bin/deckshift-settings"]="755:Gaming Mode settings TUI"
-    ["/usr/share/applications/deckshift-settings.desktop"]="644:app menu launcher for settings TUI"
     ["/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook"]="644:Pacman hook re-applies cap_sys_nice on gamescope upgrade (optional)"
   )
   echo "  FILE STATUS:"
@@ -2983,6 +3080,48 @@ verify_installation() {
     fi
   else
     echo "  ⚠ no bindings.lua or bindings.conf - keybind needs manual setup"
+  fi
+
+  echo ""
+  echo "  CONTROL PANEL (omarchy-shell plugin):"
+  echo "  -------------------------------------"
+  local plugin_dst="$HOME/.config/omarchy/plugins/${DECKSHIFT_PLUGIN_ID}"
+  local shell_json="$HOME/.config/omarchy/shell.json"
+  if [[ -f "${plugin_dst}/manifest.json" && -f "${plugin_dst}/Panel.qml" ]]; then
+    echo "  ✓ panel plugin installed at ~/.config/omarchy/plugins/${DECKSHIFT_PLUGIN_ID}"
+  else
+    echo "  ✗ panel plugin NOT installed"
+    all_ok=false
+  fi
+  # A plugin present on disk but absent from plugins[] loads its bar icon and
+  # then no-ops on every summon — check the wiring, not just the files.
+  if [[ -f "$shell_json" ]] && command -v jq >/dev/null 2>&1; then
+    if jq -e --arg id "$DECKSHIFT_PLUGIN_ID" \
+         '[.plugins[]?.id] | index($id) != null' "$shell_json" >/dev/null 2>&1; then
+      echo "  ✓ panel registered in shell.json plugins[]"
+    else
+      echo "  ✗ panel NOT in shell.json plugins[] — summoning it will do nothing"
+      all_ok=false
+    fi
+    if jq -e --arg id "$DECKSHIFT_PLUGIN_ID" \
+         '[.bar.layout[]?[]?.id] | index($id) != null' "$shell_json" >/dev/null 2>&1; then
+      echo "  ✓ bar icon present in shell.json bar layout"
+    else
+      echo "  ⚠ no bar icon — open the panel with Super+Alt+G (optional)"
+    fi
+  else
+    echo "  ⚠ no shell.json (or jq) — can't verify panel wiring"
+  fi
+  if [[ -f "$hypr_bindings_lua" ]] && grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
+    echo "  ✓ panel keybind (Super+Alt+G) configured in bindings.lua"
+  elif [[ -f "$hypr_bindings" ]] && grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings" 2>/dev/null; then
+    echo "  ✓ panel keybind (Super+Alt+G) configured in bindings.conf"
+  else
+    echo "  ⚠ panel keybind not found — bar icon still works (optional)"
+  fi
+  if [[ -e /usr/local/bin/deckshift-settings ]]; then
+    echo "  ⚠ old settings TUI still present at /usr/local/bin/deckshift-settings"
+    echo "    (superseded by the panel — re-run the installer to remove it)"
   fi
 
   echo ""
@@ -3201,7 +3340,8 @@ execute_setup() {
   setup_requirements
   setup_session_switching
   setup_xbox_controllers
-  setup_settings_tui
+  remove_legacy_settings_tui
+  setup_shell_plugin
 
   if [ "$NEEDS_REBOOT" -eq 1 ]; then
     echo ""

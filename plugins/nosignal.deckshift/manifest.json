@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "nosignal.deckshift",
+  "name": "DeckShift",
+  "version": "0.2.0",
+  "author": "Gavin Nugent",
+  "license": "MIT",
+  "description": "Gaming Mode control panel: pick the monitor, resolution, refresh rate and GPU gamescope launches with, then drop into Gaming Mode without leaving the desktop. Summon with: omarchy-shell shell toggle nosignal.deckshift",
+  "kinds": ["panel", "bar-widget"],
+  "entryPoints": {
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "DeckShift",
+    "description": "Bar icon that toggles the Gaming Mode control panel",
+    "category": "System",
+    "allowMultiple": false
+  }
+}
