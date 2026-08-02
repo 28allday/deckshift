@@ -88,8 +88,51 @@ Item {
 
   // ------------------------------------------------------------- lifecycle
 
+  // ------------------------------------------------------- self-registration
+
+  // Keep the keyboard shortcut working with the bar on, off, or absent.
+  //
+  // `omarchy plugin enable` writes only the `bar.layout` entry for a plugin
+  // that is both a panel and a bar widget: PluginRegistry.setEnabled picks the
+  // bar branch of an if/else chain, so the `plugins[]` push below it is never
+  // reached. The panel is then enabled only for as long as its icon sits in
+  // the bar — take the icon out, or never want one, and the shell stops
+  // instantiating the panel, so `omarchy-shell shell toggle` exits 0 and does
+  // nothing. That is what "the keybinding doesn't work" turns out to be.
+  //
+  // So the first time we open, claim a `plugins[]` reference of our own. That
+  // reference is enough on its own, so from then on the shortcut survives the
+  // icon being removed. Idempotent, writes through a temp file, and inert once
+  // a shell that writes both references itself has landed.
+  //
+  // It cannot repair an install that is already switched off: with no
+  // reference the shell never loads this panel, so none of this runs. That
+  // case needs `omarchy plugin enable <id>` once.
+  //
+  // Harness: sh -c <script> plugin-selfref <id> — $0 is the label, $1 the id.
+  property bool selfRefEnsured: false
+  readonly property string ensureSelfRefScript: [
+    'id="$1"',
+    'f="$HOME/.config/omarchy/shell.json"',
+    '[ -f "$f" ] || exit 0',
+    'jq -e --arg id "$id" \'any(.plugins[]?; (.id // empty) == $id)\' "$f" >/dev/null && exit 0',
+    'tmp="$f.selfref.$$"',
+    'jq --arg id "$id" \'.plugins = ((.plugins // []) + [{id: $id}])\' "$f" > "$tmp" || {',
+    '  rm -f "$tmp"; exit 1;',
+    '}',
+    '[ -s "$tmp" ] || { rm -f "$tmp"; exit 1; }',
+    'mv "$tmp" "$f"'
+  ].join("\n")
+
+  function ensureSelfReference() {
+    if (root.selfRefEnsured) return
+    root.selfRefEnsured = true
+    Quickshell.execDetached(["sh", "-c", root.ensureSelfRefScript, "plugin-selfref", root.selfId])
+  }
+
   function open(payloadJson) {
     root.opened = true
+    root.ensureSelfReference()
     root.refresh()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
