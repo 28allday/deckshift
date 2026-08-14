@@ -2,7 +2,7 @@
 
 **Version 0.2.0** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Alt+G`).
 
-Lineage: forked from [Super-Shift-S-Omarchy-Deck-Mode](https://git.no-signal.uk/nosignal/Super-Shift-S-Omarchy-Deck-Mode), briefly renamed Omarchy Deck, then renamed DeckShift.
+Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy Deck, then renamed DeckShift.
 
 > **Target:** [Omarchy](https://omarchy.com) — Arch + Hyprland + SDDM. DeckShift depends on Omarchy-specific helpers (`omarchy-pkg-add`, `omarchy-install-gaming-steam`, etc.) and is not intended to be cross-distro. Omarchy 4 (Quickshell / Lua config) is the primary target; pre-4 installs are still handled via the legacy `.conf` fallbacks.
 
@@ -24,100 +24,7 @@ The gum-based `deckshift-settings` TUI is gone, replaced by **`nosignal.deckshif
 
 **Requires Omarchy 4** for the panel — the installer skips it with a warning on older builds, where Gaming Mode itself still works via the keybinds.
 
-### v0.1.15 — Omarchy 4 (Quickshell + Lua config) compatibility
-
-Omarchy 4 moved Hyprland onto a Lua config provider (`hyprctl systeminfo` reports `configProvider: lua`) and replaced the Waybar/Walker/Mako desktop stack with the Quickshell-based omarchy-shell. Two things this broke, both fixed:
-
-- **The `Super+Shift+S` keybind never activated on fresh Omarchy 4 installs.** The `*.conf` files under `~/.config/hypr` (including `bindings.conf`, where DeckShift wrote its keybind) are no longer read at all. The installer now writes to `~/.config/hypr/bindings.lua` when it exists — `hl.unbind("SUPER + SHIFT + S")` first (Omarchy's defaults claim that combo, and duplicate Hyprland binds both fire), then `o.bind(...)`. `bindings.conf` remains as a fallback for pre-4 installs.
-- **`deckshift-portal-recovery` silently stopped running after returning from Gaming Mode** — its `exec-once` lived in the now-ignored `autostart.conf`, so the screen-share/portal fix from v0.1.4 was effectively disabled. The installer now wires it via `o.launch_on_start(...)` in `~/.config/hypr/autostart.lua`, with the `autostart.conf` fallback kept for pre-4.
-- `--verify` now checks the Lua files on Omarchy 4 (previously it false-passed against the dead `bindings.conf`) and gained a portal-recovery autostart check.
-- Removed the Walker/elephant integration: `omarchy-restart-walker` and `elephant` no longer exist on Omarchy 4. The elephant `launch_prefix` config step, the Walker refresh after installing the settings launcher, and the clipboard-restart tail of `deckshift-portal-recovery` are all gone. Omarchy 4's shell owns the clipboard and starts fresh with each session, so the stale-clipboard bug those steps fixed can no longer occur. (If you're on pre-4 Omarchy and rely on the clipboard fix, stay on v0.1.13.)
-
-Re-running `./deckshift.sh` on an existing install migrates the keybind and autostart wiring to the Lua files automatically.
-
-*(v0.1.14 was an unreleased keybind change that was reverted; the version number is skipped.)*
-
-### v0.1.13 — Pacman hook keeps gamescope's cap_sys_nice across upgrades
-
-- Linux file capabilities live as an xattr (`security.capability`) on the inode, so every time pacman replaces `/usr/bin/gamescope` during an upgrade the previously-granted `cap_sys_nice=eip` is silently lost. Performance mode keeps "working" but the compositor thread loses its priority boost — worse frame pacing and input latency, with no error surfaced anywhere.
-- DeckShift now installs `/usr/share/libalpm/hooks/deckshift-gamescope-cap.hook`, a pacman hook that re-applies `cap_sys_nice=eip` PostTransaction whenever `gamescope` is installed or upgraded. The installer prompts for it the same time it asks for the initial capability grant; if you already consented on a prior install, re-running `./deckshift.sh` adds the hook silently.
-- The hook is treated as optional in the verification step, so users who declined performance mode (or declined the cap prompt) won't see a missing-file warning.
-
-### v0.1.12 — Refresh-rate selection actually reaches gamescope now
-
-- **The real bug:** Omarchy installs `gamescope` from Arch's `extra` repo (upstream Valve binary), but the AUR `gamescope-session-git` script (OpenGamingCollective / ex-ChimeraOS fork) was written assuming the ChimeraOS-fork `gamescope-plus` binary that ships `--custom-refresh-rates`. The fork isn't packaged for 64-bit Arch — we can't install it cleanly. The session script feature-detects via `gamescope_has_option "--custom-refresh-rates"`, finds it absent, and **silently drops the `CUSTOM_REFRESH_RATES` value before it reaches gamescope**. Net effect: every refresh-rate selection in the DeckShift TUI since the project began has been a no-op. Gaming Mode has been launching at the EDID-preferred mode (usually 60 Hz) regardless of what the user picked. v0.1.8's "60 Hz fix" was correct on paper but never actually reached the binary on Omarchy.
-- **The fix:** `./deckshift.sh` now patches `/usr/share/gamescope-session-plus/gamescope-session-plus` in place, adding an `elif` branch that falls back to `--nested-refresh` (a flag present in every gamescope version) with the highest value from the `CUSTOM_REFRESH_RATES` list as the launch rate. The patch is marked with a `DECKSHIFT-NESTED-REFRESH-FALLBACK` sentinel comment for idempotency, and is re-applied on every install so AUR upgrades that clobber the file don't silently regress refresh-rate handling.
-- **What you should do after upgrading:** re-run `./deckshift.sh` once. Future-you, if you ever see Gaming Mode stuck at 60 Hz after a `pacman -Syu` that touched `gamescope-session-git`, just re-run the installer — the patch reapplies cleanly.
-
-### v0.1.11 — Multi-monitor handling: disable an auxiliary monitor before Gaming Mode
-
-- New env var `OUTPUT_CONNECTOR_TO_DISABLE` (single connector or comma list). When set, `switch-to-gaming` runs `hyprctl keyword monitor <conn>,disable` for each listed connector *before* SDDM restart, while Hyprland is still alive. The disable is runtime-only — when the user returns from Gaming Mode, the new Hyprland reads its static config fresh and the monitor comes back automatically.
-- Settings TUI exposes this as a **"Hide monitor"** option in the main menu and on the state panel. The picker lists every connected monitor *except* the gaming one, plus a "(clear)" entry to remove the override.
-- Fixes a reported issue on multi-monitor setups (e.g. Framework Desktop + LG DualUp + Gigabyte M27Q) where gamescope would either land on the wrong screen or refuse to start when both monitors were attached. The previous workaround was to physically unplug the second monitor.
-- Also fixes a latent bug from v0.1.10: the config-file path in the TUI was supposed to render with `~` instead of `/home/<user>` to fit the panel, but bash's tilde-expansion on the replacement side of `${var/#pat/~}` re-expanded `~` back to `$HOME`, making the substitution a no-op. The replacement is now escaped as `\~`.
-
-### v0.1.10 — Settings TUI layout polish
-
-- Banner, state panel, menu header, and menu items now share a single centred panel column rather than each block centring itself independently. The TUI feels visibly aligned in a Walker floating window of any width — no more drifting elements off to the left while the menu floats to the right.
-- Panel width is adaptive (`min(terminal − 6, 60)`, floored at 40) so the layout looks right from narrow ttys up to fullscreen.
-- Terminal-width detection now reads `stty size </dev/tty` first (kernel-reported, always reflects the live window) and only falls back to `tput cols` / `80`. Fixes off-centre rendering in freshly-spawned floating terminals whose terminfo hasn't caught up yet.
-- Config-file path now renders with `~` instead of `/home/<user>/…` so it fits the panel.
-- Unset resolution shows `<auto>` (matching the other unset placeholders) instead of `?x?`.
-
-### v0.1.9 — Auto-migrate legacy refresh-rate values
-
-- Installer now detects pre-v0.1.8 scalar `CUSTOM_REFRESH_RATES` values (e.g. `165`) and rewrites them to the v0.1.8 comma format (`60,165`), then imports the new value into the running systemd user environment. Re-running `./deckshift.sh` is enough to fix Gaming Mode for users hit by the 60 Hz bug — no need to re-open the Settings TUI and re-pick the rate.
-
-### v0.1.8 — Settings TUI now reaches gamescope without re-login
-
-- The Settings TUI used to write `~/.config/environment.d/gamescope-session-plus.conf` and rely on the user logging out before the change reached `gamescope-session-plus@.service`. Saving the TUI now calls `systemctl --user import-environment` for the keys it just wrote, so the next Gaming Mode launch picks up the new values immediately.
-- Refresh-rate writes are now a comma list with `60` as the floor (e.g. `60,165`) rather than a single value. Gamescope's `--custom-refresh-rates` is a list of switchable rates, not a launch-rate selector — keeping `60` in the list guarantees a safe fallback if the high-rate mode isn't enumerated on first launch.
-- Fixes a reported regression where Gaming Mode always launched at 60 Hz on NVIDIA + HDMI even though the TUI showed the user's chosen rate.
-
-### v0.1.7 — Foot terminal compatibility
-
-- Internal: confirmed DeckShift Settings TUI works unchanged with Omarchy's new `foot` terminal (in addition to kitty / ghostty / alacritty). No code changes required — Omarchy's stock floating-window rule already lists foot's native class.
-
-### v0.1.6 — Omarchy-only, simpler portal recovery
-
-- Dropped the non-Omarchy fallback in `deckshift-portal-recovery` — DeckShift targets Omarchy only, so the helper now just calls `omarchy-restart-walker` directly.
-- Header / docs cleaned up to drop the "cross-distro is the next direction" note.
-
-### v0.1.5 — clipboard recovery after Gaming Mode
-
-- After returning from Gaming Mode, Walker's clipboard listener (`elephant.service`) was still bound to the killed Hyprland's Wayland socket, so paste did nothing and clipboard history was empty.
-- `deckshift-portal-recovery` now calls `omarchy-restart-walker` at the end, which restarts `elephant.service` + `app-walker@autostart.service` and reattaches the clipboard to the live compositor.
-
-### v0.1.4 — portal recovery race fix
-
-- The initial `deckshift-portal-recovery` helper restarted all five services (xdg-desktop-portal-hyprland, xdg-desktop-portal, pipewire, pipewire-pulse, wireplumber) simultaneously. That raced — the portals could come up before wireplumber had rebuilt the node graph, leaving the screencast portal bound to nothing.
-- Rewritten as a serialised sequence: push live `WAYLAND_DISPLAY`/`XDG_*` env into systemd-user + D-Bus activation env → stop portals → SIGTERM/SIGKILL stragglers → restart pipewire stack → wait → start portals.
-- Thanks to the user on the issue tracker who diagnosed the race and supplied the env-update + serialised-restart sequence.
-
-### v0.1.3 — power-state save/restore + reliable exit
-
-- **Saves your real pre-Gaming-Mode state** (CPU governor + power profile) on entry to `~/.cache/deckshift/saved-state` and restores those exact values on exit. No more guessing `powersave`/`balanced`.
-- **Synchronous restore in `switch-to-desktop`** — runs *before* SDDM is restarted, so the restore can't be SIGKILL'd mid-write by session teardown.
-- **`switch-to-desktop` now uses an atomic `systemctl restart sddm`** instead of a racy stop+disowned-start that could leave the display manager stopped (= black screen).
-- **`powerprofilesctl` is now in the NOPASSWD allowlist** so the restore call can succeed without a polkit auth agent.
-
-### v0.1.2 — TUI hardening + hybrid PRIME offload
-
-- **Hybrid GPU support in the Settings TUI.** Two new GPU modes:
-  - **`[hybrid-nvidia]`** — for laptops with NVIDIA dGPU + AMD/Intel iGPU where the laptop screen (`eDP-1`) is wired to the iGPU. Sets `__NV_PRIME_RENDER_OFFLOAD=1` + friends so Gamescope runs on the iGPU but games inside still render on the NVIDIA dGPU via PRIME render offload. Tested working on Acer Nitro (AMD APU + RTX 3050) playing Homeworld 3 with NVIDIA acceleration on the laptop screen.
-  - **`[hybrid-amd]`** — for AMD dGPU + AMD/Intel iGPU laptops. Asks which GPU is the dGPU, then sets `DRI_PRIME` + `MESA_VK_DEVICE_SELECT` so games offload to the AMD dGPU.
-- **Settings TUI no longer crashes on stale `OUTPUT_CONNECTOR`.** When the saved monitor is currently unplugged the TUI falls back gracefully instead of tripping `pipefail`.
-- **Installer no longer preselects monitor / resolution / refresh rate.** Display selection is now exclusively the TUI's job; the installer writes only GPU and static keys to `gamescope-session-plus.conf`.
-- **Conf writer is now per-key set/unset** (sed-based), idempotent — re-running the installer preserves user-set display values from the TUI instead of clobbering them.
-
-### v0.1.1 / v0.1.0 — original deckshift fork
-
-- Settings TUI launched from Walker (`Super+Space → "DeckShift Settings"`).
-- NVIDIA driver branch auto-pick (Pascal/Maxwell/Volta → `nvidia-580xx-utils`, Turing+ → `nvidia-utils`) via Omarchy's `omarchy-hw-nvidia-gsp`.
-- Idempotent package installs via `omarchy-pkg-add`.
-- Optional Xbox Bluetooth controller support (`xpadneo-dkms`, opt-in).
-- Intel GPU support (Iris Xe, Arc) with a generation warning for older Gen8/9.
-- Multilib check removed (Omarchy ships with multilib enabled).
+Older releases are summarised in the [Changelog](#changelog).
 
 ## Control panel
 
@@ -169,7 +76,7 @@ Switching between modes is seamless — SDDM handles session transitions, and yo
 ## Quick Start
 
 ```bash
-git clone https://git.no-signal.uk/nosignal/deckshift.git
+git clone https://github.com/28allday/deckshift.git
 cd deckshift
 chmod +x deckshift.sh
 ./deckshift.sh
@@ -444,7 +351,7 @@ GBM_BACKEND=nvidia-drm
 
 Display keys (`SCREEN_WIDTH`, `SCREEN_HEIGHT`, `CUSTOM_REFRESH_RATES`, `OUTPUT_CONNECTOR`) and hybrid-PRIME env vars are **owned exclusively by the control panel**. Re-running the installer preserves your choices.
 
-**NVIDIA note**: Gamescope on NVIDIA is currently capped at 2560×1440. The TUI flags any higher resolution as unsupported.
+**NVIDIA note**: Gamescope on NVIDIA is currently capped at 2560×1440. The control panel labels any higher resolution as unsupported.
 
 ### Shader Cache
 
@@ -561,7 +468,7 @@ If you're on AC and using Omarchy, this is expected — see the *Performance Mod
 - Older Gen8/9 Intel iGPUs (Skylake, Kaby Lake) struggle with Vulkan workloads. Lower the launch resolution in the control panel — 720p / 1080p makes a big difference.
 - If you have a discrete GPU that should take over, check its driver is loaded: `lspci -k | grep -A2 VGA`
 
-**Gaming Mode launches at 60 Hz even though I picked a higher rate in the TUI**
+**Gaming Mode launches at 60 Hz even though I picked a higher rate**
 
 `--custom-refresh-rates` is gamescope's list of *switchable* rates, not a launch-rate selector. On embedded/DRM output (especially NVIDIA + HDMI) gamescope picks the connector's EDID-preferred mode at first launch, which is usually 60 Hz even when higher modes are enumerated. Two-step fix:
 
@@ -570,7 +477,7 @@ If you're on AC and using Omarchy, this is expected — see the *Performance Mod
    systemctl --user show-environment | grep REFRESH
    journalctl --user -u "gamescope-session-plus@*" -b --no-pager | grep -m1 -- '--custom-refresh-rates'
    ```
-   In v0.1.8+ this should work without re-login — the Settings TUI now calls `systemctl --user import-environment` on save. If you're on an older release, log out and back in once after saving in the TUI.
+   In v0.2.0+ this works without re-login — the control panel pushes saved values into the running session (`systemctl --user set-environment`). On older releases, log out and back in once after saving.
 2. Once Steam Big Picture is up, set the rate explicitly: Settings → Display → Refresh Rate → your rate. Steam persists this client-side, so every subsequent Gaming Mode launch will go straight to that rate.
 
 ### Log Locations
@@ -654,6 +561,24 @@ sudo udevadm control --reload-rules
 # Optionally remove AUR packages
 yay -Rns gamescope-session-git gamescope-session-steam-git
 ```
+
+## Changelog
+
+- **v0.2.0** — Native Omarchy 4 control panel (bar icon + panel, `Super+Alt+G`) replaces the gum settings TUI; saved settings now actually reach the running session (`set-environment` fix); Launch Gaming Mode from the panel behind a confirm.
+- **v0.1.15** — Omarchy 4 compatibility: keybind and portal-recovery autostart moved to the Lua config files (`bindings.lua` / `autostart.lua`, `.conf` fallback for pre-4); Walker/elephant integration removed. *(v0.1.14 was an unreleased keybind change that was reverted; the number is skipped.)*
+- **v0.1.13** — Pacman hook re-applies gamescope's `cap_sys_nice` after every upgrade (pacman silently strips file capabilities when it replaces the binary).
+- **v0.1.12** — Refresh-rate selection actually reaches gamescope: the AUR session script assumes a fork-only `--custom-refresh-rates` flag, so the installer now patches in a `--nested-refresh` fallback (re-applied on every run).
+- **v0.1.11** — Multi-monitor: hide an auxiliary monitor before Gaming Mode (`OUTPUT_CONNECTOR_TO_DISABLE`, runtime-only, monitor returns automatically on desktop).
+- **v0.1.10** — Settings TUI layout polish (single aligned panel column, adaptive width).
+- **v0.1.9** — Auto-migrate legacy scalar refresh-rate values on installer re-run.
+- **v0.1.8** — Settings apply without re-login; refresh rate written as a comma list with a 60 Hz floor.
+- **v0.1.7** — Steam bootstrap delegated to `omarchy-install-gaming-steam` (fixes AMD installs); dependency cleanup.
+- **v0.1.6** — Omarchy-only: dropped the non-Omarchy portal-recovery fallback.
+- **v0.1.5** — Clipboard recovery after returning from Gaming Mode.
+- **v0.1.4** — Portal recovery race fix — screen sharing works reliably after returning to desktop.
+- **v0.1.3** — Power-state save/restore (CPU governor + power profile) and reliable session exit.
+- **v0.1.2** — TUI hardening + hybrid PRIME offload (`[hybrid-nvidia]` / `[hybrid-amd]`).
+- **v0.1.1 / v0.1.0** — Original fork: settings TUI, NVIDIA driver branch auto-pick, idempotent installs, optional Xbox controller support, Intel GPU support.
 
 ## Credits
 
