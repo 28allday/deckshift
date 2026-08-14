@@ -4,9 +4,9 @@ Working notes for future development sessions. User-facing docs live in README.m
 
 ## Current state (2026-08-14)
 
-- **v0.2.0 built; the end-to-end Launch test is the last gate before release.**
-  The Omarchy 4 control-panel work was done in a temporary remote-less working
-  clone and has now been merged back into this repo.
+- **v0.2.0 released** (2026-08-14) — confirmed working in real use on the dev
+  system. The Omarchy 4 control-panel work was done in a temporary remote-less
+  working clone and has been merged back into this repo.
 - The change: the gum settings TUI (`bin/deckshift-settings`,
   `applications/*.desktop`) is deleted and replaced by
   `plugins/nosignal.deckshift/` — an omarchy-shell (Quickshell) plugin with a
@@ -129,10 +129,8 @@ delete-then-append), so the dev box's real config can't drift.
 
 ## Open items / ideas
 
-- **Launch button never exercised end to end.** The confirm dialog and the
-  cancel path are verified; pressing Launch for real (execDetached →
-  switch-to-gaming → SDDM restart → Big Picture → return) has not been run.
-  This is the main thing standing between v0.2.0 and a release.
+- ~~Launch button never exercised end to end~~ — confirmed working in real
+  use on the dev system (2026-08-14); v0.2.0 released.
 - Real hardware round-trip test of v0.1.15 portal recovery (enter Gaming Mode,
   return, confirm "Share desktop" works in Chromium) — still outstanding, and
   can be folded into the same test run as the Launch button.
