@@ -39,7 +39,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.2.0"
+DECKSHIFT_VERSION="0.2.1"
 
 # Plugin id for the omarchy-shell control panel. Must match the "id" in
 # plugins/<id>/manifest.json — the shell keys everything (shell.json entries,
@@ -512,10 +512,8 @@ check_steam_dependencies() {
     "lib32-libxss"
     "lib32-alsa-plugins"
     "lib32-libpulse"
-    "lib32-openal"
     "lib32-nss"
     "lib32-libcups"
-    "lib32-sdl2-compat"
     "lib32-freetype2"
     "lib32-fontconfig"
     "lib32-libnm"
@@ -586,7 +584,6 @@ check_steam_dependencies() {
     gpu_deps+=(
       "vulkan-radeon"
       "libvdpau"
-      "lib32-libvdpau"
     )
   fi
 
@@ -634,6 +631,25 @@ check_steam_dependencies() {
       optional_deps+=("$dep")
     fi
   done
+
+  # Packages can vanish from the repos between DeckShift releases — Arch
+  # dropped lib32-openal, lib32-sdl2-compat and lib32-libvdpau from multilib
+  # once the Steam runtime stopped needing them, and any hard-required package
+  # that no longer exists turns into a fatal "target not found" on fresh
+  # installs. Skip anything the repos no longer offer instead of dying.
+  # (Repo packages only — AUR packages like proton-ge-custom-bin are in
+  # optional_deps and never pass through this filter.)
+  if ((${#missing_deps[@]})); then
+    local -a available_deps=()
+    for dep in "${missing_deps[@]}"; do
+      if pacman -Si "$dep" &>/dev/null; then
+        available_deps+=("$dep")
+      else
+        warn "Skipping '$dep' — not available in the package repos"
+      fi
+    done
+    missing_deps=("${available_deps[@]}")
+  fi
 
   echo ""
   echo "================================================================"

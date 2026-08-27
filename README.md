@@ -1,6 +1,6 @@
 # DeckShift
 
-**Version 0.2.0** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Alt+G`).
+**Version 0.2.1** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Alt+G`).
 
 Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy Deck, then renamed DeckShift.
 
@@ -9,6 +9,10 @@ Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy De
 [![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
 
 ## What's New
+
+### v0.2.1 — Fresh installs no longer fail on removed multilib packages
+
+Arch removed `lib32-openal`, `lib32-sdl2-compat` and `lib32-libvdpau` from the multilib repo (the Steam runtime bundles its own copies, so Steam no longer depends on them). Fresh installs hit `error: target not found` on those three and died with `FATAL: Failed to install Steam dependencies`. They're gone from the dependency list, and the installer now skips any required package the repos no longer offer instead of aborting.
 
 ### v0.2.0 — Native Omarchy 4 control panel (replaces the settings TUI)
 
@@ -143,14 +147,14 @@ The installer checks for and offers to install:
 **Core Steam Dependencies**
 - `steam`, `gamescope`, `mangohud`, `gamemode`
 - Vulkan loaders and Mesa libraries (32-bit and 64-bit)
-- Audio libraries (`lib32-alsa-plugins`, `lib32-libpulse`, `lib32-openal`)
+- Audio libraries (`lib32-alsa-plugins`, `lib32-libpulse`)
 - Networking (`networkmanager`, `lib32-libnm`)
 - Fonts (`ttf-liberation`)
 
 **GPU-Specific Drivers**
 - **NVIDIA (Turing+ / GSP firmware — GTX 16xx, RTX 20–50xx, etc.)**: `nvidia-utils`, `lib32-nvidia-utils`, `nvidia-settings`, `libva-nvidia-driver`
 - **NVIDIA (legacy Maxwell/Pascal/Volta — GTX 9xx/10xx, Quadro P/M)**: `nvidia-580xx-utils`, `lib32-nvidia-580xx-utils`, `nvidia-settings`, `libva-nvidia-driver`
-- **AMD**: `vulkan-radeon`, `lib32-vulkan-radeon`, `libvdpau`, `lib32-libvdpau`
+- **AMD**: `vulkan-radeon`, `lib32-vulkan-radeon`, `libvdpau`
 - **Intel**: `vulkan-intel`, `lib32-vulkan-intel`, `intel-media-driver`
 
 The correct NVIDIA driver branch is auto-selected via Omarchy's `omarchy-hw-nvidia-gsp` / `omarchy-hw-nvidia-without-gsp` helpers — no manual override needed. Intel-only systems get a generation warning + Y/N prompt before continuing (Skylake/Kaby Lake era is slow; Tiger Lake / Arc is fine).
@@ -564,6 +568,7 @@ yay -Rns gamescope-session-git gamescope-session-steam-git
 
 ## Changelog
 
+- **v0.2.1** — Fix fresh installs failing with "target not found": dropped `lib32-openal`, `lib32-sdl2-compat` and `lib32-libvdpau` (removed from Arch multilib); installer now skips repo-dropped packages instead of aborting.
 - **v0.2.0** — Native Omarchy 4 control panel (bar icon + panel, `Super+Alt+G`) replaces the gum settings TUI; saved settings now actually reach the running session (`set-environment` fix); Launch Gaming Mode from the panel behind a confirm.
 - **v0.1.15** — Omarchy 4 compatibility: keybind and portal-recovery autostart moved to the Lua config files (`bindings.lua` / `autostart.lua`, `.conf` fallback for pre-4); Walker/elephant integration removed. *(v0.1.14 was an unreleased keybind change that was reverted; the number is skipped.)*
 - **v0.1.13** — Pacman hook re-applies gamescope's `cap_sys_nice` after every upgrade (pacman silently strips file capabilities when it replaces the binary).
