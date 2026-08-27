@@ -39,7 +39,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.2.1"
+DECKSHIFT_VERSION="0.2.2"
 
 # Plugin id for the omarchy-shell control panel. Must match the "id" in
 # plugins/<id>/manifest.json — the shell keys everything (shell.json entries,
@@ -2190,6 +2190,59 @@ NVIDIA_WRAPPER
 log() { logger -t gamescope-wrapper "$*"; echo "$*"; }
 
 SAVED_STATE_FILE="$HOME/.cache/deckshift/saved-state"
+DECKSHIFT_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/nosignal.deckshift"
+DECKSHIFT_CAPTURE="$DECKSHIFT_STATE/capture"
+DECKSHIFT_CURRENT="$DECKSHIFT_STATE/current"
+DECKSHIFT_LOG=""
+
+deckshift_capture_on() {
+    [[ -f "$DECKSHIFT_CAPTURE" ]]
+}
+
+deckshift_prune_logs() {
+    shopt -s nullglob
+    local files=("$DECKSHIFT_STATE"/session-*.log)
+    local n=${#files[@]}
+    (( n > 10 )) || return 0
+    local sorted
+    mapfile -t sorted < <(printf '%s\n' "${files[@]}" | sort)
+    local drop=$(( ${#sorted[@]} - 10 ))
+    local i
+    for (( i = 0; i < drop; i++ )); do
+        rm -f "${sorted[i]}"
+    done
+}
+
+# Opt-in file log for the panel. switch-to-gaming creates the dated file and
+# writes its path to `current`; we append. If this session started without
+# that preamble (SDDM autologin still on Gaming Mode), create one here.
+deckshift_begin_session_log() {
+    deckshift_capture_on || return 0
+    mkdir -p "$DECKSHIFT_STATE" || return 0
+    local log=""
+    if [[ -f "$DECKSHIFT_CURRENT" ]]; then
+        log=$(tr -d '\n' < "$DECKSHIFT_CURRENT")
+    fi
+    if [[ -z "$log" || ! -f "$log" ]]; then
+        log="$DECKSHIFT_STATE/session-$(date +%Y%m%d-%H%M%S).log"
+        printf '%s\n' "$log" > "$DECKSHIFT_CURRENT"
+        {
+            echo "=== DeckShift session ==="
+            echo "started: $(date -Iseconds)"
+            echo "user: ${USER:-}"
+            echo "note: wrapper created this log (no switch-to-gaming current file)"
+        } > "$log"
+        deckshift_prune_logs
+    fi
+    {
+        echo "=== gamescope session start ==="
+        echo "started: $(date -Iseconds)"
+    } >> "$log"
+    DECKSHIFT_LOG="$log"
+    exec >>"$log" 2>&1
+}
+
+deckshift_begin_session_log
 
 # Capture the user's actual pre-Gaming-Mode CPU governor + power profile so we
 # can restore those exact values on exit, instead of guessing "powersave/balanced"
@@ -2296,6 +2349,10 @@ cleanup() {
     sudo -n /usr/local/bin/gamescope-nm-stop 2>/dev/null || true
     restore_balanced_mode
     rm -f /tmp/.gaming-session-active
+    if [[ -n "$DECKSHIFT_LOG" ]]; then
+        echo "=== gamescope session end ===" >> "$DECKSHIFT_LOG" 2>/dev/null || true
+        sync -f "$DECKSHIFT_LOG" 2>/dev/null || sync
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -2348,7 +2405,11 @@ export GTK_IM_MODULE=Steam
 export STEAM_DISABLE_AUDIO_DEVICE_SWITCHING=1
 export STEAM_ENABLE_VOLUME_HANDLER=1
 
-/usr/share/gamescope-session-plus/gamescope-session-plus steam
+if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL -eL /usr/share/gamescope-session-plus/gamescope-session-plus steam
+else
+    /usr/share/gamescope-session-plus/gamescope-session-plus steam
+fi
 rc=$?
 
 exit $rc
@@ -2416,6 +2477,43 @@ OS_SESSION_SELECT
 
   sudo tee "$switch_script" > /dev/null << 'SWITCH_SCRIPT'
 #!/bin/bash
+# Opt-in session log for the nosignal.deckshift panel. The flag lives in the
+# XDG state dir so it survives this Hyprland session dying at the SDDM restart.
+DECKSHIFT_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/nosignal.deckshift"
+DECKSHIFT_CAPTURE="$DECKSHIFT_STATE/capture"
+DECKSHIFT_CURRENT="$DECKSHIFT_STATE/current"
+if [[ -f "$DECKSHIFT_CAPTURE" ]]; then
+  mkdir -p "$DECKSHIFT_STATE"
+  DECKSHIFT_LOG="$DECKSHIFT_STATE/session-$(date +%Y%m%d-%H%M%S).log"
+  {
+    echo "=== DeckShift switch-to-gaming ==="
+    echo "started: $(date -Iseconds)"
+    echo "user: ${USER:-}"
+    ENV_CONF="$HOME/.config/environment.d/gamescope-session-plus.conf"
+    if [[ -f "$ENV_CONF" ]]; then
+      echo "--- gamescope-session-plus.conf ---"
+      cat "$ENV_CONF"
+      echo "---"
+    fi
+  } > "$DECKSHIFT_LOG"
+  printf '%s\n' "$DECKSHIFT_LOG" > "$DECKSHIFT_CURRENT"
+  shopt -s nullglob
+  prune_files=("$DECKSHIFT_STATE"/session-*.log)
+  prune_n=${#prune_files[@]}
+  if (( prune_n > 10 )); then
+    mapfile -t prune_sorted < <(printf '%s\n' "${prune_files[@]}" | sort)
+    prune_drop=$(( ${#prune_sorted[@]} - 10 ))
+    for (( prune_i = 0; prune_i < prune_drop; prune_i++ )); do
+      rm -f "${prune_sorted[prune_i]}"
+    done
+  fi
+  if command -v stdbuf >/dev/null 2>&1; then
+    exec > >(stdbuf -oL tee -a "$DECKSHIFT_LOG") 2>&1
+  else
+    exec > >(tee -a "$DECKSHIFT_LOG") 2>&1
+  fi
+fi
+
 # Inhibit suspend FIRST - prevents suspend when monitor detaches during switch
 sudo -n systemctl mask --runtime sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null
 sudo -n /usr/local/bin/gaming-session-switch gaming 2>/dev/null || {
@@ -3138,6 +3236,26 @@ verify_installation() {
   if [[ -e /usr/local/bin/deckshift-settings ]]; then
     echo "  ⚠ old settings TUI still present at /usr/local/bin/deckshift-settings"
     echo "    (superseded by the panel — re-run the installer to remove it)"
+  fi
+
+  echo ""
+  echo "  SESSION LOG CAPTURE:"
+  echo "  --------------------"
+  local wrapper_bin="/usr/local/bin/gamescope-session-nm-wrapper"
+  local switch_bin="/usr/local/bin/switch-to-gaming"
+  if [[ -f "$wrapper_bin" ]] && grep -q "omarchy/nosignal.deckshift" "$wrapper_bin" \
+       && grep -q 'DECKSHIFT_CAPTURE' "$wrapper_bin"; then
+    echo "  ✓ session wrapper honors opt-in capture under ~/.local/state/omarchy/nosignal.deckshift"
+  else
+    echo "  ✗ session wrapper is missing capture logging — re-run the installer"
+    all_ok=false
+  fi
+  if [[ -f "$switch_bin" ]] && grep -q "omarchy/nosignal.deckshift" "$switch_bin" \
+       && grep -q 'DECKSHIFT_CAPTURE' "$switch_bin"; then
+    echo "  ✓ switch-to-gaming starts a dated session log when capture is on"
+  else
+    echo "  ✗ switch-to-gaming is missing capture logging — re-run the installer"
+    all_ok=false
   fi
 
   echo ""

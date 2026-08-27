@@ -63,6 +63,19 @@ Item {
   property string saveError: ""
   property bool saving: false
 
+  // Opt-in session logs. The flag and files live under XDG state so they
+  // survive the SDDM restart that kills this panel. Capture is written the
+  // moment the toggle flips — Save-buffering would miss Super+Shift+S.
+  property bool captureEnabled: false
+  property int sessionCount: 0
+
+  readonly property string stateDir: {
+    var xdg = Quickshell.env("XDG_STATE_HOME")
+    var home = Quickshell.env("HOME") || ""
+    var rootDir = (xdg && xdg !== "") ? xdg : (home + "/.local/state")
+    return rootDir + "/omarchy/" + root.selfId
+  }
+
   // Keys the GPU dropdown owns. Cleared as a set on every GPU pick so
   // switching modes never leaves a stale flag behind — same list, same reason
   // as the TUI's GPU_MODE_KEYS.
@@ -160,6 +173,7 @@ Item {
     root.pendingSet = ({})
     root.pendingUnset = ({})
     fetchProc.running = true
+    sessionListProc.running = true
   }
 
   // ---------------------------------------------------- pending-edit buffer
@@ -638,6 +652,64 @@ Item {
     onExited: function(exitCode) { root.saveFinished(exitCode, saveOut.text) }
   }
 
+  // ---------------------------------------------------------- session logs
+
+  // Two lines: capture flag, then the number of session-*.log files.
+  readonly property string sessionListScript: [
+    'dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/nosignal.deckshift"',
+    '[ -f "$dir/capture" ] && echo true || echo false',
+    'shopt -s nullglob',
+    'files=("$dir"/session-*.log)',
+    'echo ${#files[@]}'
+  ].join("\n")
+
+  function parseSessions(text) {
+    var lines = String(text || "").split("\n")
+    root.captureEnabled = String(lines[0] || "").trim() === "true"
+    var n = parseInt(String(lines[1] || "0").trim(), 10)
+    root.sessionCount = (n > 0) ? n : 0
+  }
+
+  Process {
+    id: sessionListProc
+    command: ["sh", "-c", root.sessionListScript]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.parseSessions(text)
+    }
+  }
+
+  readonly property string captureWriteScript: [
+    'on="$1"',
+    'dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/nosignal.deckshift"',
+    'mkdir -p "$dir" || exit 1',
+    'if [ "$on" = "1" ]; then echo 1 > "$dir/capture"; else rm -f "$dir/capture"; fi'
+  ].join("\n")
+
+  function setCapture(on) {
+    root.captureEnabled = on
+    Quickshell.execDetached(["sh", "-c", root.captureWriteScript, "deckshift-capture", on ? "1" : "0"])
+  }
+
+  function openSessionDir() {
+    // Default terminal at the log dir, cat the newest session-*.log, then
+    // drop into a shell so the window doesn't vanish. uwsm-app +
+    // xdg-terminal-exec is how Omarchy itself opens terminals.
+    Quickshell.execDetached(["sh", "-c", [
+      'dir="$1"',
+      'mkdir -p "$dir" || exit 1',
+      'shopt -s nullglob',
+      'files=("$dir"/session-*.log)',
+      'if (( ${#files[@]} > 0 )); then',
+      '  latest=$(printf \'%s\\n\' "${files[@]}" | sort | tail -n1)',
+      '  inner="cat $(printf %q "$latest"); echo; exec bash"',
+      'else',
+      '  inner=\'echo "No session logs yet."; exec bash\'',
+      'fi',
+      'setsid uwsm-app -- xdg-terminal-exec --dir="$dir" -e bash -c "$inner"'
+    ].join("\n"), "deckshift-sessions", root.stateDir])
+  }
+
   // ---------------------------------------------------------------- launch
 
   // Raise the confirm and take the keyboard back off whichever dropdown
@@ -918,7 +990,64 @@ Item {
             }
           }
 
+          // ---- session log --------------------------------------------------
+          Column {
+            width: parent.width
+            spacing: root.rowSpacing
+
+            PanelSeparator { foreground: root.foreground }
+
+            PanelSectionHeader {
+              text: "SESSION LOG"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Item {
+              width: parent.width
+              height: Math.max(captureSwitch.implicitHeight, viewSessionsButton.implicitHeight)
+
+              Row {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.spacing.lg
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Capture session"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.subtitle
+                }
+
+                ToggleSwitch {
+                  id: captureSwitch
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: root.captureEnabled
+                  foreground: root.foreground
+                  accent: root.accent
+                  onToggled: root.setCapture(!root.captureEnabled)
+                }
+              }
+
+              Button {
+                id: viewSessionsButton
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: "View"
+                bordered: true
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                opacity: root.sessionCount > 0 ? 1.0 : 0.4
+                onClicked: root.openSessionDir()
+              }
+            }
+          }
+
           // ---- actions ------------------------------------------------------
+          PanelSeparator { foreground: root.foreground }
+
           Item {
             width: parent.width
             height: launchButton.implicitHeight + card.contentBottomInset

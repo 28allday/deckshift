@@ -1,6 +1,6 @@
 # DeckShift
 
-**Version 0.2.1** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Alt+G`).
+**Version 0.2.2** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Alt+G`).
 
 Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy Deck, then renamed DeckShift.
 
@@ -9,6 +9,10 @@ Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy De
 [![DeckShift demo](https://img.youtube.com/vi/nj4pLh3spCs/maxresdefault.jpg)](https://youtu.be/nj4pLh3spCs)
 
 ## What's New
+
+### v0.2.2 — Opt-in session logs from the control panel
+
+Gaming Mode tears down Hyprland, so session output used to vanish with the desktop. The panel now has a **Capture session** toggle: when it's on, `switch-to-gaming` and the gamescope wrapper write a dated log under `~/.local/state/omarchy/nosignal.deckshift/` (the 10 newest are kept). **View** opens the default terminal on the latest file and `cat`s it.
 
 ### v0.2.1 — Fresh installs no longer fail on removed multilib packages
 
@@ -94,7 +98,7 @@ After install, open the control panel (bar icon or `Super+Alt+G`) and pick:
 - A resolution / refresh rate
 - A GPU mode — for hybrid laptops, prefer `[hybrid-nvidia]` or `[hybrid-amd]` over the direct options
 
-Press **Save**, then **Launch Gaming Mode** (or `Super+Shift+S`).
+Press **Save**, then **Launch Gaming Mode** (or `Super+Shift+S`). Turn on **Capture session** in the panel first if you want a log of that run (kept under `~/.local/state/omarchy/nosignal.deckshift/`, 10 newest).
 
 > Already-running shells won't show the panel until you run `omarchy-restart-shell` once.
 
@@ -107,6 +111,8 @@ Press **Save**, then **Launch Gaming Mode** (or `Super+Shift+S`).
 | Return to Desktop (alternative) | Steam → Power → **Switch to Desktop** |
 | Open control panel | Bar icon, `Super + Alt + G`, or `omarchy-shell shell toggle nosignal.deckshift` |
 | Launch Gaming Mode from panel | **Launch Gaming Mode** button (confirms first) |
+| Capture a session log | Panel **Capture session** toggle, then launch. Logs land in `~/.local/state/omarchy/nosignal.deckshift/` (10 newest kept) |
+| Open session logs | **View** in the panel (terminal `cat` of the newest session log) |
 
 ### Command-Line Options
 
@@ -488,6 +494,7 @@ If you're on AC and using Omarchy, this is expected — see the *Performance Mod
 
 | Component | Command |
 |---|---|
+| Session files (opt-in from the panel) | `~/.local/state/omarchy/nosignal.deckshift/session-*.log` (10 newest) |
 | Gaming session | `journalctl --user -u gamescope-session` |
 | NetworkManager | `journalctl -t gamescope-nm` |
 | Drive mounting | `journalctl -t steam-library-mount` |
@@ -568,6 +575,7 @@ yay -Rns gamescope-session-git gamescope-session-steam-git
 
 ## Changelog
 
+- **v0.2.2** — Opt-in Gaming Mode session logs from the control panel: capture toggle writes dated logs under `~/.local/state/omarchy/nosignal.deckshift/` (10 newest kept); View cats the latest in the default terminal.
 - **v0.2.1** — Fix fresh installs failing with "target not found": dropped `lib32-openal`, `lib32-sdl2-compat` and `lib32-libvdpau` (removed from Arch multilib); installer now skips repo-dropped packages instead of aborting.
 - **v0.2.0** — Native Omarchy 4 control panel (bar icon + panel, `Super+Alt+G`) replaces the gum settings TUI; saved settings now actually reach the running session (`set-environment` fix); Launch Gaming Mode from the panel behind a confirm.
 - **v0.1.15** — Omarchy 4 compatibility: keybind and portal-recovery autostart moved to the Lua config files (`bindings.lua` / `autostart.lua`, `.conf` fallback for pre-4); Walker/elephant integration removed. *(v0.1.14 was an unreleased keybind change that was reverted; the number is skipped.)*
