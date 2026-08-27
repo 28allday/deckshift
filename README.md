@@ -391,7 +391,7 @@ Use **`[hybrid-nvidia]`** in the control panel instead. Gamescope will run on th
 
 ## Bootloader Support
 
-the installer enables NVIDIA DRM modeset via:
+The installer enables NVIDIA DRM modeset via:
 
 - `/etc/modprobe.d/nvidia.conf` — `options nvidia_drm modeset=1`
 - `/etc/mkinitcpio.conf.d/nvidia.conf` — `MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)`
