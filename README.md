@@ -10,9 +10,11 @@ Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy De
 
 ## What's New
 
-### v0.2.2 — Opt-in session logs from the control panel
+### v0.2.2 — Opt-in session logs, quieter NVIDIA install, honest `--verify`
 
-Gaming Mode tears down Hyprland, so session output used to vanish with the desktop. The panel now has a **Capture session** toggle: when it's on, `switch-to-gaming` and the gamescope wrapper write a dated log under `~/.local/state/omarchy/nosignal.deckshift/` (the 10 newest are kept). **View** opens the default terminal on the latest file and `cat`s it.
+Gaming Mode tears down Hyprland, so session output used to vanish with the desktop. The panel now has a **Capture session** toggle: when it's on, `switch-to-gaming` and the gamescope wrapper write a dated log under `~/.local/state/omarchy/nosignal.deckshift/` (the 10 newest are kept). **View** opens the default terminal on the latest file and `cat`s it. Uninstall removes that folder too.
+
+If Omarchy had already enabled NVIDIA DRM modeset, the installer still warned it was missing and failed to notice Limine — then asked you to edit a bootloader config you did not need to touch. It now recognises that setup, and only offers to enable modeset the Omarchy way if it really is off. `--verify` no longer reports you missing the `video` / `input` / `wheel` groups just because you have not logged out yet; it will still remind you that a new login is what actually applies them.
 
 ### v0.2.1 — Fresh installs no longer fail on removed multilib packages
 
@@ -308,7 +310,7 @@ The installer detects:
 
 - **AMD dGPU**: PCI device names (Navi, RDNA, Vega discrete cards)
 - **AMD APU**: integrated GPU codenames (Phoenix, Rembrandt, Van Gogh, etc.)
-- **NVIDIA**: lspci, configures `nvidia-drm.modeset=1` if missing, picks `nvidia-utils` vs `nvidia-580xx-utils` via Omarchy's GSP-firmware detection
+- **NVIDIA**: lspci, enables DRM modeset the Omarchy way (`/etc/modprobe.d/nvidia.conf` + mkinitcpio modules) if missing, picks `nvidia-utils` vs `nvidia-580xx-utils` via Omarchy's GSP-firmware detection
 - **Intel (Arc / Iris Xe / iGPU)**: `i915` / `xe` kernel drivers
 - **Hybrid combinations**: detected by the control panel, which surfaces the appropriate `[hybrid-*]` GPU mode
 
@@ -375,7 +377,7 @@ DXVK_STATE_CACHE=1
 
 ## NVIDIA-Specific Notes
 
-- **Kernel parameter**: `nvidia-drm.modeset=1` is required. The installer can configure this for Limine, GRUB, or systemd-boot.
+- **DRM modeset**: required so Gamescope can take over the display. The installer treats it as already on if `/sys/module/nvidia_drm/parameters/modeset` is `Y`, Omarchy's `/etc/modprobe.d/nvidia.conf` has `options nvidia_drm modeset=1`, or the kernel cmdline has `nvidia-drm.modeset=1` (any bootloader). If missing, it writes the same two files and rebuilds the initramfs (`limine-mkinitcpio` on Limine/UKI, `mkinitcpio -P` otherwise).
 - **Resolution cap**: Gamescope on NVIDIA is limited to 2560×1440 maximum.
 - **Force composition**: the NVIDIA wrapper automatically adds `--force-composition` if your Gamescope version supports it.
 - **Environment**: `GBM_BACKEND=nvidia-drm` and related vars are set automatically.
@@ -389,13 +391,12 @@ Use **`[hybrid-nvidia]`** in the control panel instead. Gamescope will run on th
 
 ## Bootloader Support
 
-The installer can automatically configure `nvidia-drm.modeset=1` for:
+the installer enables NVIDIA DRM modeset via:
 
-- **Limine** — appends to `cmdline:` in `/boot/limine.conf`
-- **GRUB** — adds to `GRUB_CMDLINE_LINUX_DEFAULT` and regenerates config
-- **systemd-boot** — provides manual instructions for `/boot/loader/entries/*.conf`
+- `/etc/modprobe.d/nvidia.conf` — `options nvidia_drm modeset=1`
+- `/etc/mkinitcpio.conf.d/nvidia.conf` — `MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)`
 
-A backup is created before any bootloader modification.
+That works with Limine (Omarchy default), GRUB, or systemd-boot. The installer still detects which bootloader you use so it can rebuild the initramfs correctly.
 
 ## Troubleshooting
 
@@ -420,7 +421,7 @@ See [Recovery from a Black Screen](#recovery-from-a-black-screen) for how to get
 
 **Gaming Mode doesn't start**
 
-- Check NVIDIA kernel params: `cat /proc/cmdline | grep nvidia`
+- Check NVIDIA DRM modeset: `cat /sys/module/nvidia_drm/parameters/modeset` (expect `Y`) or `cat /etc/modprobe.d/nvidia.conf`
 - Verify gamescope works: `gamescope -- steam`
 - Check session logs: `journalctl --user -u gamescope-session -n 50`
 
@@ -544,6 +545,7 @@ sudo rm -f /etc/NetworkManager/conf.d/20-unmanaged-systemd.conf
 # Remove user files
 rm -f ~/.config/environment.d/gamescope-session-plus.conf
 rm -rf ~/.cache/deckshift
+rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/nosignal.deckshift"
 
 # Remove the control panel plugin and its shell.json wiring
 rm -rf ~/.config/omarchy/plugins/nosignal.deckshift
@@ -575,7 +577,7 @@ yay -Rns gamescope-session-git gamescope-session-steam-git
 
 ## Changelog
 
-- **v0.2.2** — Opt-in Gaming Mode session logs from the control panel: capture toggle writes dated logs under `~/.local/state/omarchy/nosignal.deckshift/` (10 newest kept); View cats the latest in the default terminal.
+- **v0.2.2** — Opt-in Gaming Mode session logs from the control panel (dated files under `~/.local/state/omarchy/nosignal.deckshift/`, 10 newest kept). NVIDIA DRM modeset is detected via Omarchy's modprobe/sysfs (not only `/proc/cmdline`) and enabled with the same `nvidia.conf` drop-ins + initramfs rebuild, any bootloader. `--verify` reads `/etc/group` for `video`/`input`/`wheel` so group checks pass without logging out. Uninstall removes the session-log state directory.
 - **v0.2.1** — Fix fresh installs failing with "target not found": dropped `lib32-openal`, `lib32-sdl2-compat` and `lib32-libvdpau` (removed from Arch multilib); installer now skips repo-dropped packages instead of aborting.
 - **v0.2.0** — Native Omarchy 4 control panel (bar icon + panel, `Super+Alt+G`) replaces the gum settings TUI; saved settings now actually reach the running session (`set-environment` fix); Launch Gaming Mode from the panel behind a confirm.
 - **v0.1.15** — Omarchy 4 compatibility: keybind and portal-recovery autostart moved to the Lua config files (`bindings.lua` / `autostart.lua`, `.conf` fallback for pre-4); Walker/elephant integration removed. *(v0.1.14 was an unreleased keybind change that was reverted; the number is skipped.)*
