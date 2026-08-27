@@ -2,8 +2,20 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
-## Current state (2026-08-14)
+## Current state (2026-08-27)
 
+- **v0.2.1 released** (2026-08-27) — hotfix for user-reported fresh-install
+  failures: Arch dropped `lib32-openal`, `lib32-sdl2-compat` and
+  `lib32-libvdpau` from multilib (Steam runtime bundles its own copies; the
+  `steam` package no longer depends on them — multilib now ships `lib32-sdl3`
+  instead of sdl2-compat). Removed from core_deps / AMD gpu_deps, and
+  `check_steam_dependencies` now filters missing required deps through
+  `pacman -Si`, warn-and-skipping repo-dropped packages instead of dying on
+  "target not found". The bug never showed on the dev box because the three
+  packages were already installed there from before the repo drop —
+  `check_package` passed, so the install path never ran. Only fresh installs
+  hit it. Filter is repo-only by design: AUR packages (proton-ge-custom-bin)
+  live in optional_deps and don't pass through it.
 - **v0.2.0 released** (2026-08-14) — confirmed working in real use on the dev
   system. The Omarchy 4 control-panel work was done in a temporary remote-less
   working clone and has been merged back into this repo.
