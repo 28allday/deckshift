@@ -2,7 +2,13 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
-## Current state (2026-08-27)
+## Current state (2026-08-27) — PARKED
+
+Project parked 2026-08-27 after the v0.2.1 hotfix shipped. Nothing is
+mid-flight; the tree is clean and master + tags are dual-pushed. Pick-up
+points when resuming: the Open items list at the bottom, plus letting the
+users who reported the fresh-install failure know v0.2.1 fixes it (re-run
+`./deckshift.sh` from a fresh pull).
 
 - **v0.2.1 released** (2026-08-27) — hotfix for user-reported fresh-install
   failures: Arch dropped `lib32-openal`, `lib32-sdl2-compat` and
