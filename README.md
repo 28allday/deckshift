@@ -444,15 +444,19 @@ See [Recovery from a Black Screen](#recovery-from-a-black-screen) for how to get
 
 **Screen sharing in Chromium / Firefox is broken after returning from Gaming Mode (only "Share a tab" works)**
 
-Root cause: `xdg-desktop-portal-hyprland` (and the pipewire stack behind it) is still bound to the killed Hyprland instance after the SDDM restart. Tab capture in Chromium works because it bypasses the portal entirely; screen and window capture go through services that need to be reattached to the live compositor. (On pre-4 Omarchy the same stale-socket problem also killed the clipboard via Walker's `elephant.service`; Omarchy 4's shell starts fresh each session, so the clipboard is unaffected there.)
+Root cause: while the gamescope session is running, Steam D-Bus-activates `xdg-desktop-portal` inside it. That instance comes up with almost no environment — no `XDG_CURRENT_DESKTOP` — so it can't match a backend and falls back to GTK. It's still running when your Hyprland session returns, so nothing restarts it, it never learns it's on Hyprland, and it never activates `xdg-desktop-portal-hyprland`. With no screencast backend, the source picker is never spawned and the share dialog just sits there. Tab capture works because Chromium does it internally, without the portal.
 
-DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery`, autostarted from `~/.config/hypr/autostart.lua` (Omarchy 4) or `autostart.conf` (pre-4). **If you installed before v0.1.15 and are on Omarchy 4, re-run `./deckshift.sh`** — the old `autostart.conf` wiring is ignored by Omarchy 4's Lua config provider, so the helper never ran. You can also run the recovery manually:
+To confirm: `systemctl --user is-active xdg-desktop-portal-hyprland.service` returns `inactive`.
+
+DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery`, autostarted from `~/.config/hypr/autostart.lua` (Omarchy 4) or `autostart.conf` (pre-4). **If you installed before v0.2.1, re-run `./deckshift.sh`** — earlier versions wrote the trigger marker too late in `switch-to-desktop` to ever survive, so the helper no-oped on every return. If you're on a pre-v0.1.15 install and on Omarchy 4, re-running also fixes the `autostart.conf` wiring, which Omarchy 4's Lua config provider ignores.
+
+To fix a session that's already broken, without a re-login:
 
 ```bash
-touch /tmp/.deckshift-just-returned && /usr/local/bin/deckshift-portal-recovery
+systemctl --user restart xdg-desktop-portal.service
 ```
 
-then re-open the browser tab. (The `touch` is needed because the helper is a no-op without the marker file — that's deliberate, so it doesn't bounce portals on every normal login.)
+then re-open the browser tab. Running `/usr/local/bin/deckshift-portal-recovery` by hand does the same thing plus the GTK backend — since v0.2.1 it detects the bad state on its own, so it no longer needs the marker file to be touched first.
 
 **Suspend fails with "Access denied" after returning from Gaming Mode**
 

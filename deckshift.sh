@@ -2244,20 +2244,29 @@ enable_performance_mode() {
 restore_balanced_mode() {
     log "Restoring pre-Gaming-Mode state..."
 
-    # Read what the user's state actually was before Gaming Mode; fall back
-    # to safe defaults if the saved-state file is missing.
-    local saved_cpu_gov="" saved_pp=""
+    # Read what the user's state actually was before Gaming Mode.
+    #
+    # A missing saved-state file does NOT mean "guess safe defaults" — it means
+    # switch-to-desktop already consumed the file and restored the real values
+    # on its way out. Writing powersave/balanced on top of that clobbers a
+    # correct restore with a guess, which is wrong on any machine whose normal
+    # state is something else (schedutil, or performance on a desktop). So the
+    # governor and profile are only touched when we actually know the values.
+    local saved_cpu_gov="" saved_pp="" have_saved_state=0
     if [[ -f "$SAVED_STATE_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$SAVED_STATE_FILE"
         saved_cpu_gov="${PRE_GAMING_CPU_GOVERNOR:-}"
         saved_pp="${PRE_GAMING_POWER_PROFILE:-}"
+        have_saved_state=1
     fi
 
     local target_gov="${saved_cpu_gov:-powersave}"
-    for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo "$target_gov" > "$gov" 2>/dev/null
-    done
+    if (( have_saved_state )); then
+        for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo "$target_gov" > "$gov" 2>/dev/null
+        done
+    fi
 
     # NVIDIA dGPU restore
     if command -v nvidia-smi &>/dev/null; then
@@ -2279,18 +2288,29 @@ restore_balanced_mode() {
         sudo -n nvidia-smi -pm 0 2>/dev/null
     fi
 
-    # Restore power profile (saved value, or balanced fallback)
-    if command -v powerprofilesctl &>/dev/null; then
+    # Restore power profile — same rule as the governor above.
+    if (( have_saved_state )) && command -v powerprofilesctl &>/dev/null; then
         local target_pp="${saved_pp:-balanced}"
         sudo -n powerprofilesctl set "$target_pp" 2>/dev/null || \
             powerprofilesctl set "$target_pp" 2>/dev/null
     fi
 
     rm -f "$SAVED_STATE_FILE"
-    log "Pre-Gaming-Mode state restored (governor=$target_gov profile=${saved_pp:-balanced})"
+    if (( have_saved_state )); then
+        log "Pre-Gaming-Mode state restored (governor=$target_gov profile=${saved_pp:-balanced})"
+    else
+        log "No saved state to restore (already restored by switch-to-desktop); GPU state reset only"
+    fi
 }
 
 cleanup() {
+    # Guard against re-entry. The trap fires on EXIT *and* on the signal that
+    # caused the exit, so on a normal Gaming Mode exit this ran three times in
+    # the same second — each later pass finding the saved-state file already
+    # deleted by the first.
+    [[ -n "${DECKSHIFT_CLEANUP_DONE:-}" ]] && return 0
+    DECKSHIFT_CLEANUP_DONE=1
+
     pkill -f steam-library-mount 2>/dev/null || true
     pkill -f gaming-keybind-monitor 2>/dev/null || true
     sudo -n /usr/local/bin/gamescope-nm-stop 2>/dev/null || true
@@ -2474,6 +2494,19 @@ if [[ ! -f /tmp/.gaming-session-active ]]; then
 fi
 rm -f /tmp/.gaming-session-active
 
+# Marker for the next Hyprland startup — tells deckshift-portal-recovery that
+# we are returning from Gaming Mode and the xdg-desktop-portal stack needs a
+# kick. /tmp survives the session switch; /run/user does not.
+#
+# This MUST be written before anything below touches gamescope. This script
+# runs inside the gamescope session's SDDM scope (sddm-helper -> wrapper ->
+# gaming-keybind-monitor -> here), so the `pkill gamescope` further down ends
+# the very session it lives in: the wrapper exits, SDDM closes the session and
+# systemd tears the scope down, killing this script with it. Written at the end
+# (where it used to live) the touch was never reached, so the recovery helper
+# saw no marker and no-oped on every single return.
+touch /tmp/.deckshift-just-returned 2>/dev/null || true
+
 # SYNCHRONOUS POWER RESTORE — done first because the trap-based restore in
 # gamescope-session-nm-wrapper can be SIGKILL'd by `systemctl restart sddm`
 # before it completes, leaving CPU governor / power profile stuck at
@@ -2525,14 +2558,18 @@ fi
 
 sleep 2
 
-# Marker for the next Hyprland startup — tells deckshift-portal-recovery
-# that we're returning from Gaming Mode and the xdg-desktop-portal stack
-# needs a kick. Without this, Chromium/Firefox screen-sharing on Wayland
-# silently fails (only tab-sharing works) because the portal is still bound
-# to the killed Hyprland instance. /tmp survives SDDM restart; /run/user
-# does not (logind tears down the user manager).
-touch /tmp/.deckshift-just-returned 2>/dev/null || true
-
+# Fallback return path. On a stock DeckShift install these two lines are
+# normally never reached: killing gamescope above ends this script's own SDDM
+# session scope, and SDDM's `Relogin=true` (written by the installer into
+# /etc/sddm.conf.d/zz-gaming-session.conf) logs straight back into the session
+# name `gaming-session-switch desktop` already selected, so the desktop returns
+# without any help from here.
+#
+# They are kept for installs where the session does not end on its own —
+# without them the user would be left staring at gamescope's dead output. Do
+# not background/disown the restart to "make it survive": on a Relogin=true
+# system it would then fire a second time and kill the Hyprland session that
+# just came up.
 sudo -n chvt 2 2>/dev/null || true
 sleep 0.5
 # Atomic restart — stop+start (with stop and start as separate sudo calls)
@@ -2651,63 +2688,113 @@ KEYBIND_MONITOR
 
   # Portal Recovery Helper — runs at every Hyprland startup
   #
-  # When switch-to-desktop restarts SDDM, the new Hyprland instance gets a
-  # fresh HYPRLAND_INSTANCE_SIGNATURE, but xdg-desktop-portal-hyprland (and
-  # the pipewire stack) may still be bound to the old, dead instance. The
-  # symptom is Chromium/Firefox "Share desktop / window" failing silently on
-  # Google Meet etc. while "Share a tab" still works (because tab capture
-  # bypasses the portal entirely).
+  # Symptom: after returning from Gaming Mode, "Share screen" in Chromium /
+  # Firefox does nothing at all — the source picker never appears. Sharing a
+  # tab still works, because tab capture bypasses the portal entirely.
   #
-  # switch-to-desktop drops /tmp/.deckshift-just-returned right before the
-  # SDDM restart. This helper, run as exec-once from Hyprland's autostart,
-  # checks for that marker on every Hyprland start, and if present, bounces
-  # the portal + pipewire user services so they reattach to the live HIS.
-  # No marker = no-op (cheap; runs in milliseconds).
+  # Cause (measured on Omarchy 4.0.0 / xdg-desktop-portal 1.22.1): the portal
+  # teardown at session exit is correct — every portal unit is
+  # PartOf=graphical-session.target and stops cleanly. Two seconds later,
+  # while the gamescope session is coming up, *Steam* D-Bus-activates
+  # xdg-desktop-portal. That instance starts with almost no environment (its
+  # entire /proc/PID/environ is `XDG_RUNTIME_DIR=/run/user/1000` — no
+  # XDG_CURRENT_DESKTOP, no WAYLAND_DISPLAY), so it cannot match a backend
+  # from portals.conf and logs "Choosing gtk.portal ... as a last-resort
+  # fallback"; the GTK backend then dies with "cannot open display".
   #
-  # The recovery sequence is ordered to avoid a race that earlier versions
-  # hit when restarting all five services simultaneously: portals could come
-  # up before wireplumber had finished building the node graph, so the
-  # screencast portal would bind to nothing. We now (a) push live session
-  # env into D-Bus + systemd --user so portals activate against the new
-  # Wayland socket, (b) stop portals first, (c) restart pipewire and wait
-  # for the graph, (d) start portals last. (Pre-Omarchy-4 versions also
-  # restarted Walker/elephant to reattach the clipboard listener; Omarchy 4's
-  # omarchy-shell owns the clipboard and starts fresh with each session, so
-  # that step is gone.)
+  # When Hyprland comes back that frontend is still `active`, so nothing
+  # restarts it. It never re-reads portals.conf, never learns
+  # XDG_CURRENT_DESKTOP=Hyprland, and therefore never activates
+  # xdg-desktop-portal-hyprland — which stays `inactive (dead)` for the rest
+  # of the session, leaving no screencast backend at all.
+  #
+  # It survives because the user manager is never torn down: the gamescope
+  # session runs as the same user, so user@UID.service keeps running even
+  # with Linger=no. For the same reason the pipewire graph is untouched by
+  # the round-trip, which is why this helper no longer restarts it.
+  #
+  # The fix is to restart the *frontend*; it then re-activates the Hyprland
+  # backend by itself. The helper triggers on the marker dropped by
+  # switch-to-desktop, or — so a lost marker cannot silently disable the whole
+  # mechanism — on directly detecting a poisoned frontend. No trigger = no-op.
   info "Creating portal recovery helper..."
   local portal_recovery="/usr/local/bin/deckshift-portal-recovery"
 
   sudo tee "$portal_recovery" > /dev/null << 'PORTAL_RECOVERY'
 #!/bin/bash
-[[ -f /tmp/.deckshift-just-returned ]] || exit 0
-rm -f /tmp/.deckshift-just-returned
+# DeckShift — repair the xdg-desktop-portal stack after Gaming Mode.
+# See the comment above this heredoc in deckshift.sh for the full analysis.
 
-# Give the new Hyprland a moment to fully come up and export its env to the
-# user manager (HYPRLAND_INSTANCE_SIGNATURE / WAYLAND_DISPLAY).
-sleep 2
+marker=/tmp/.deckshift-just-returned
+returned=0
+if [[ -f $marker ]]; then
+  returned=1
+  rm -f "$marker"
+fi
 
-# Pull the live session env into systemd --user and the D-Bus activation env,
-# so D-Bus-activated portals bind to the new Wayland socket, not the dead one
-# left over from the gamescope session.
-systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
-dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+# Wait for uwsm/Hyprland to publish the session env to the user manager,
+# rather than guessing with a fixed sleep.
+for _ in {1..20}; do
+  systemctl --user show-environment 2>/dev/null \
+    | grep -q '^HYPRLAND_INSTANCE_SIGNATURE=' && break
+  sleep 0.5
+done
 
-# Stop portals first so they don't try to talk to a half-restarted pipewire.
-systemctl --user stop xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
-# Kill any zombies left over from gamescope's session (SIGTERM, then SIGKILL
-# only for stragglers — SIGKILL alone leaves stale D-Bus name registrations).
-pkill -TERM -x xdg-desktop-portal-hyprland xdg-desktop-portal xdg-desktop-portal-wlr 2>/dev/null
-sleep 0.5
-pkill -KILL -x xdg-desktop-portal-hyprland xdg-desktop-portal xdg-desktop-portal-wlr 2>/dev/null
-systemctl --user reset-failed xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
+# A healthy xdg-desktop-portal inherits XDG_CURRENT_DESKTOP from the session
+# and, under Hyprland, the current HYPRLAND_INSTANCE_SIGNATURE. One activated
+# by Steam inside gamescope has neither.
+#
+# Checking the frontend's own environment rather than "frontend up, backend
+# down" matters: the latter is briefly true during every normal login, while
+# this signature is unambiguous and never fires on a clean boot.
+portal_poisoned() {
+  local pid xdp_his
+  pid=$(systemctl --user show -p MainPID --value xdg-desktop-portal.service 2>/dev/null)
+  [[ -n $pid && $pid != 0 && -r /proc/$pid/environ ]] || return 1
 
-# Restart pipewire stack and wait for wireplumber to rebuild the node graph
-# before portals come back up (otherwise screencast portal binds to nothing).
-systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
-sleep 2
+  tr '\0' '\n' < "/proc/$pid/environ" | grep -q '^XDG_CURRENT_DESKTOP=' || return 0
 
-# Now bring portals up cleanly.
-systemctl --user start xdg-desktop-portal-hyprland.service xdg-desktop-portal.service 2>/dev/null || true
+  if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    xdp_his=$(tr '\0' '\n' < "/proc/$pid/environ" \
+              | sed -n 's/^HYPRLAND_INSTANCE_SIGNATURE=//p')
+    [[ $xdp_his != "$HYPRLAND_INSTANCE_SIGNATURE" ]] && return 0
+  fi
+  return 1
+}
+
+if (( ! returned )) && ! portal_poisoned; then
+  exit 0
+fi
+
+# Push the live session vars into the systemd/D-Bus activation environment.
+# HYPRLAND_INSTANCE_SIGNATURE is included deliberately: Omarchy's screen-share
+# picker (hyprland-preview-share-picker, wired up via xdph.conf's
+# custom_picker_binary) opens the Hyprland IPC socket itself and exits without
+# ever drawing a window if that variable is missing.
+VARS="WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP HYPRLAND_INSTANCE_SIGNATURE"
+# shellcheck disable=SC2086
+systemctl --user import-environment $VARS 2>/dev/null || true
+# shellcheck disable=SC2086
+dbus-update-activation-environment --systemd $VARS 2>/dev/null || true
+
+# Stop the backends, then restart the frontend. On restart it re-reads
+# portals.conf with a correct XDG_CURRENT_DESKTOP and D-Bus-activates the
+# Hyprland backend. The GTK backend is included because gamescope-side
+# activation leaves it failed ("cannot open display", status=1/FAILURE), and
+# it is the fallback for every interface xdph does not implement
+# (hyprland-portals.conf: default=hyprland;gtk).
+systemctl --user stop \
+  xdg-desktop-portal-hyprland.service \
+  xdg-desktop-portal-gtk.service 2>/dev/null || true
+systemctl --user reset-failed \
+  xdg-desktop-portal.service \
+  xdg-desktop-portal-hyprland.service \
+  xdg-desktop-portal-gtk.service 2>/dev/null || true
+systemctl --user restart xdg-desktop-portal.service 2>/dev/null || true
+
+# Nudge the Hyprland backend up in case nothing has requested a portal yet.
+sleep 1
+systemctl --user start xdg-desktop-portal-hyprland.service 2>/dev/null || true
 PORTAL_RECOVERY
 
   sudo chmod +x "$portal_recovery"
