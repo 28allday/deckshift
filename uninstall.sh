@@ -37,7 +37,7 @@ for arg in "$@"; do
     --yes|-y)          ASSUME_YES=1 ;;
     --remove-packages) REMOVE_PACKAGES=1 ;;
     --revert-grub)     REVERT_GRUB=1 ;;
-    -h|--help)         sed -n '2,26p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+    -h|--help)         sed -n '2,24p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -273,6 +273,7 @@ info "Removing user files"
 drop_user "$USER_HOME/.config/environment.d/gamescope-session-plus.conf"
 drop_user "$USER_HOME/.config/environment.d/90-fcitx-wayland.conf"
 drop_user "$USER_HOME/.cache/deckshift"
+drop_user "${XDG_STATE_HOME:-$USER_HOME/.local/state}/omarchy/$PLUGIN_ID" "session logs + capture flag"
 drop_user "$USER_HOME/.config/omarchy/plugins/$PLUGIN_ID" "control panel plugin"
 for m in /tmp/.gaming-session-active /tmp/.deckshift-just-returned; do
   [[ -e $m ]] && drop_user "$m" "stale marker"
@@ -496,6 +497,9 @@ Left alone on purpose:
   · your group memberships (video / input / wheel) — dropping wheel would
     cost you sudo, and you may have been in these before installing
   · packages such as gamescope, mangohud and xpadneo-dkms
+  · /etc/modprobe.d/nvidia.conf and /etc/mkinitcpio.conf.d/nvidia.conf —
+    identical to what Omarchy itself writes on NVIDIA systems, and your
+    desktop needs DRM modeset regardless of DeckShift
   · any /etc/default/grub.backup.* the installer wrote
   · comments you wrote yourself next to a removed keybind — only DeckShift's
     own comment lines are stripped, so a stray note may be left behind

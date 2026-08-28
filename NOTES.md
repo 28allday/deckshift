@@ -2,13 +2,38 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
-## Current state (2026-08-27) — PARKED
+## Current state (2026-08-28) — three community PRs merged, v0.2.2 UNTAGGED
 
-Project parked 2026-08-27 after the v0.2.1 hotfix shipped. Nothing is
-mid-flight; the tree is clean and master + tags are dual-pushed. Pick-up
-points when resuming: the Open items list at the bottom, plus letting the
-users who reported the fresh-install failure know v0.2.1 fixes it (re-run
-`./deckshift.sh` from a fresh pull).
+PRs #5, #6 and #7 merged to master 2026-08-28 (in that order), plus a
+coordination commit (version refs unified to v0.2.2, uninstall.sh --help
+sed range, uninstall now removes the #7 session-log state dir, NVIDIA
+modprobe drop-ins added to its left-alone list).
+
+**Release gate before tagging v0.2.2:**
+1. One real Gaming Mode round-trip on this box with the new installer
+   applied — PR #5's author verified every piece individually but NOT the
+   full marker-survives-teardown path end to end. Check afterwards:
+   `/tmp/.deckshift-just-returned` consumed, screen share works
+   (`systemctl --user is-active xdg-desktop-portal-hyprland.service` →
+   `active`), governor/profile back to pre-gaming values, journal shows
+   ONE "Restoring pre-Gaming-Mode state" pass, not three.
+2. `./uninstall.sh --dry-run` sanity pass.
+3. Still owed: reply to the fresh-install-failure reporters that v0.2.1+
+   fixes it (re-run `./deckshift.sh` from a fresh pull).
+
+- **PR #5** (Filip Špaldoň) — screen-share-after-Gaming-Mode actually fixed;
+  overturns the stale-HIS theory (see the superseded box further down).
+- **PR #6** (Filip Špaldoň) — `uninstall.sh` with --dry-run; README manual
+  list collapsed into a details block.
+- **PR #7** (ogarza) — opt-in session logs (panel toggle → dated logs under
+  `~/.local/state/omarchy/nosignal.deckshift/`), NVIDIA modeset via
+  Omarchy's modprobe+mkinitcpio drop-ins instead of bootloader-cmdline
+  sed, group checks via `/etc/group`. Known nits (fine to ship): wrapper
+  never clears the `current` pointer file, so a session restarted without
+  switch-to-gaming appends to the previous log; mkinitcpio presence check
+  is a bare `grep nvidia_drm` that a comment would satisfy.
+
+Previous state: parked 2026-08-27 after the v0.2.1 hotfix shipped.
 
 - **v0.2.1 released** (2026-08-27) — hotfix for user-reported fresh-install
   failures: Arch dropped `lib32-openal`, `lib32-sdl2-compat` and
@@ -189,11 +214,30 @@ The SDDM restart that brings the user back to Hyprland causes two distinct downs
 
 4. **Clipboard dead after return (v0.1.5 → simplified v0.1.6, commits `74b1a5b` + `8293d26`, 2026-05-12)** — same user reported v0.1.4 fixed the portal but clipboard then stopped working. Same root cause: Walker's `elephant.service` holds the wl-clipboard listener, which was bound to the dead Hyprland's Wayland socket. Fix: append `omarchy-restart-walker` at the END of `deckshift-portal-recovery` (it restarts `elephant.service` + `app-walker@autostart.service`). v0.1.5 had a non-Omarchy fallback; v0.1.6 removed it since DeckShift is Omarchy-only.
 
+> **⚠️ Items 2 and 3 superseded by PR #5 (merged 2026-08-28, v0.2.2).** The
+> stale-HIS theory was wrong on both counts, per Filip Špaldoň's measured
+> diagnosis: (a) the marker `touch` sat *below* the `pkill gamescope` that
+> kills `switch-to-desktop`'s own SDDM scope, so the helper **never ran even
+> once** — SDDM's `Relogin=true` masked it by bringing the desktop back
+> anyway; (b) portal units are `PartOf=graphical-session.target` and stop
+> cleanly at session exit — the real breakage is Steam D-Bus-activating
+> `xdg-desktop-portal` inside gamescope with an env of just
+> `XDG_RUNTIME_DIR`, which stays "active" after the return and never
+> activates xdph. Fix: marker written before the teardown; helper restarts
+> the frontend (backend re-activates itself), pushes
+> `HYPRLAND_INSTANCE_SIGNATURE` (Omarchy's share picker needs it), drops the
+> pipewire bounce (user manager survives the round-trip, audio was never
+> stale — bouncing it just disconnected clients), and self-triggers on a
+> detected poisoned frontend. Same PR: `cleanup()` re-entrancy guard in the
+> wrapper — it fired 3× per exit and clobbered the governor/profile restore
+> with a powersave/balanced guess. NOT yet verified end-to-end on real
+> hardware (see Open items).
+
 **Manual recovery one-liner (for stuck users on old installs):**
 ```
 touch /tmp/.deckshift-just-returned && /usr/local/bin/deckshift-portal-recovery
 ```
-The `touch` is required because the helper is a no-op without the marker — that guard prevents it from bouncing portals on every normal Hyprland login.
+The `touch` is required because the helper is a no-op without the marker — that guard prevents it from bouncing portals on every normal Hyprland login. (Since v0.2.2 the helper also self-triggers without the marker; the one-liner remains for pre-v0.2.2 installs.)
 
 **How to apply:** If a user reports anything weird after returning from Gaming Mode (sleep, screen sharing, audio routing, dbus-mediated stuff), suspect leftover state from the SDDM restart cycle first — masked targets, stale logind cache, user services bound to the dead compositor — before assuming a new bug.
 

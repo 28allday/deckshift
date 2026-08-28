@@ -10,7 +10,11 @@ Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy De
 
 ## What's New
 
-### v0.2.2 — Opt-in session logs, quieter NVIDIA install, honest `--verify`
+### v0.2.2 — Screen sharing fixed for real, session logs, an uninstaller
+
+Screen sharing in Chromium/Firefox broke after every Gaming Mode round-trip, and the recovery helper that was supposed to prevent it turned out to have never once run — `switch-to-desktop` wrote its trigger marker two lines after the command that kills the script's own session. The marker now lands before the teardown, and the helper itself was rewritten to fix what actually breaks (Steam activates a portal frontend inside gamescope with an empty environment, and it squats there when the desktop returns): it restarts that frontend so the Hyprland backend comes back on its own, and no longer bounces pipewire — which was disconnecting all your audio for nothing. It also detects the broken state directly, so it can never again be silently disabled by a lost marker. On top of that, exiting Gaming Mode no longer overwrites your CPU governor and power profile with a `powersave`/`balanced` guess. (Thanks to a heroic bit of diagnosis by Filip Špaldoň.)
+
+There's now a proper `./uninstall.sh` (also by Filip) with a `--dry-run` mode, replacing the README's drifted manual command list.
 
 Gaming Mode tears down Hyprland, so session output used to vanish with the desktop. The panel now has a **Capture session** toggle: when it's on, `switch-to-gaming` and the gamescope wrapper write a dated log under `~/.local/state/omarchy/nosignal.deckshift/` (the 10 newest are kept). **View** opens the default terminal on the latest file and `cat`s it. Uninstall removes that folder too.
 
@@ -455,7 +459,7 @@ Root cause: while the gamescope session is running, Steam D-Bus-activates `xdg-d
 
 To confirm: `systemctl --user is-active xdg-desktop-portal-hyprland.service` returns `inactive`.
 
-DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery`, autostarted from `~/.config/hypr/autostart.lua` (Omarchy 4) or `autostart.conf` (pre-4). **If you installed before v0.2.1, re-run `./deckshift.sh`** — earlier versions wrote the trigger marker too late in `switch-to-desktop` to ever survive, so the helper no-oped on every return. If you're on a pre-v0.1.15 install and on Omarchy 4, re-running also fixes the `autostart.conf` wiring, which Omarchy 4's Lua config provider ignores.
+DeckShift handles this automatically via `/usr/local/bin/deckshift-portal-recovery`, autostarted from `~/.config/hypr/autostart.lua` (Omarchy 4) or `autostart.conf` (pre-4). **If you installed before v0.2.2, re-run `./deckshift.sh`** — earlier versions wrote the trigger marker too late in `switch-to-desktop` to ever survive, so the helper no-oped on every return. If you're on a pre-v0.1.15 install and on Omarchy 4, re-running also fixes the `autostart.conf` wiring, which Omarchy 4's Lua config provider ignores.
 
 To fix a session that's already broken, without a re-login:
 
@@ -463,7 +467,7 @@ To fix a session that's already broken, without a re-login:
 systemctl --user restart xdg-desktop-portal.service
 ```
 
-then re-open the browser tab. Running `/usr/local/bin/deckshift-portal-recovery` by hand does the same thing plus the GTK backend — since v0.2.1 it detects the bad state on its own, so it no longer needs the marker file to be touched first.
+then re-open the browser tab. Running `/usr/local/bin/deckshift-portal-recovery` by hand does the same thing plus the GTK backend — since v0.2.2 it detects the bad state on its own, so it no longer needs the marker file to be touched first.
 
 **Suspend fails with "Access denied" after returning from Gaming Mode**
 
@@ -610,7 +614,7 @@ yay -Rns gamescope-session-git gamescope-session-steam-git
 
 ## Changelog
 
-- **v0.2.2** — Opt-in Gaming Mode session logs from the control panel (dated files under `~/.local/state/omarchy/nosignal.deckshift/`, 10 newest kept). NVIDIA DRM modeset is detected via Omarchy's modprobe/sysfs (not only `/proc/cmdline`) and enabled with the same `nvidia.conf` drop-ins + initramfs rebuild, any bootloader. `--verify` reads `/etc/group` for `video`/`input`/`wheel` so group checks pass without logging out. Uninstall removes the session-log state directory.
+- **v0.2.2** — Screen sharing after a Gaming Mode round-trip actually fixed: `switch-to-desktop` writes the recovery marker before the teardown that used to kill it, and `deckshift-portal-recovery` restarts the portal frontend Steam poisons inside gamescope (no more pipewire bounce, and it self-triggers on the broken state). Exiting Gaming Mode no longer clobbers the CPU governor/power profile with a guess. New `./uninstall.sh` with `--dry-run`. Opt-in Gaming Mode session logs from the control panel (dated files under `~/.local/state/omarchy/nosignal.deckshift/`, 10 newest kept). NVIDIA DRM modeset is detected via Omarchy's modprobe/sysfs (not only `/proc/cmdline`) and enabled with the same `nvidia.conf` drop-ins + initramfs rebuild, any bootloader. `--verify` reads `/etc/group` for `video`/`input`/`wheel` so group checks pass without logging out.
 - **v0.2.1** — Fix fresh installs failing with "target not found": dropped `lib32-openal`, `lib32-sdl2-compat` and `lib32-libvdpau` (removed from Arch multilib); installer now skips repo-dropped packages instead of aborting.
 - **v0.2.0** — Native Omarchy 4 control panel (bar icon + panel, `Super+Alt+G`) replaces the gum settings TUI; saved settings now actually reach the running session (`set-environment` fix); Launch Gaming Mode from the panel behind a confirm.
 - **v0.1.15** — Omarchy 4 compatibility: keybind and portal-recovery autostart moved to the Lua config files (`bindings.lua` / `autostart.lua`, `.conf` fallback for pre-4); Walker/elephant integration removed. *(v0.1.14 was an unreleased keybind change that was reverted; the number is skipped.)*
