@@ -509,7 +509,34 @@ If you're on AC and using Omarchy, this is expected — see the *Performance Mod
 
 ## Uninstalling
 
-To completely remove DeckShift:
+Run the uninstaller from the cloned repo:
+
+```bash
+./uninstall.sh --dry-run   # see exactly what it would touch
+./uninstall.sh             # remove DeckShift
+```
+
+It removes every file DeckShift creates, strips its Hyprland keybinds and
+autostart lines (Lua and legacy `.conf`), unwires the control-panel plugin from
+`shell.json`, drops `cap_sys_nice` from the gamescope binary, offers to restore
+the patched `gamescope-session-plus`, and puts SDDM back on your desktop session
+before deleting its config. Every file it edits is backed up alongside the
+original with a `.pre-uninstall.bak` suffix.
+
+Two things are opt-in, because they're commonly wanted independently of
+DeckShift:
+
+| Flag | Effect |
+|---|---|
+| `--remove-packages` | also remove the AUR `gamescope-session*` packages |
+| `--revert-grub` | also strip `nvidia-drm.modeset=1` and regenerate GRUB |
+
+Add `--yes` to skip the prompts. Your group memberships (`video`, `input`,
+`wheel`) are never touched — removing yourself from `wheel` would cost you sudo,
+and you may well have been in them before installing.
+
+<details>
+<summary>Manual removal, if you'd rather not run the script</summary>
 
 ```bash
 # Stop any running gaming-mode bits
@@ -578,6 +605,8 @@ sudo udevadm control --reload-rules
 # Optionally remove AUR packages
 yay -Rns gamescope-session-git gamescope-session-steam-git
 ```
+
+</details>
 
 ## Changelog
 
