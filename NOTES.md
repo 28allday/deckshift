@@ -2,7 +2,13 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
-## Current state (2026-08-28) — three community PRs merged, v0.2.2 UNTAGGED
+## Current state (2026-08-28) — PARKED; v0.2.2 on master UNTAGGED
+
+Parked 2026-08-28 pending the maintainer's hardware pass: full fresh
+install, Gaming Mode round-trip, uninstall test. Tag v0.2.2 once that
+comes back clean (gate details below).
+
+## 2026-08-28 — three community PRs merged, v0.2.2 UNTAGGED
 
 PRs #5, #6 and #7 merged to master 2026-08-28 (in that order), plus a
 coordination commit (version refs unified to v0.2.2, uninstall.sh --help
