@@ -22,7 +22,7 @@
 #
 # It handles everything needed for this transformation:
 #   - Installing all Steam/gaming dependencies and GPU drivers
-#   - Configuring NVIDIA kernel parameters (nvidia-drm.modeset=1)
+#   - Configuring NVIDIA DRM modeset (Omarchy modprobe + mkinitcpio)
 #   - Setting up session switching between Hyprland and Gamescope via SDDM
 #   - Creating keybinds (Super+Shift+S to enter, Super+Shift+R to exit)
 #   - Configuring NetworkManager handoff (iwd <-> NM) for Steam network access
@@ -39,7 +39,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.2.1"
+DECKSHIFT_VERSION="0.2.2"
 
 # Plugin id for the omarchy-shell control panel. Must match the "id" in
 # plugins/<id>/manifest.json — the shell keys everything (shell.json entries,
@@ -125,6 +125,19 @@ validate_environment() {
 # Quick check if a pacman package is installed. Used throughout the script
 # to avoid reinstalling things that are already present.
 check_package() { pacman -Qi "$1" &>/dev/null; }
+
+# Group membership: `id -nG USER` reads /etc/group, so it is correct right
+# after usermod. Bare `id -nG` / `groups` is this login session and stays
+# stale until logout.
+user_in_group_db() {
+  local user="${1:-$USER}"
+  local grp="$2"
+  id -nG "$user" 2>/dev/null | grep -qw "$grp"
+}
+
+user_in_group_session() {
+  id -nG 2>/dev/null | grep -qw "$1"
+}
 
 # Distinguishes AMD integrated GPUs (iGPUs/APUs) from discrete AMD GPUs (dGPUs).
 # This matters because Gaming Mode needs to target the RIGHT GPU — if you have
@@ -271,15 +284,40 @@ detect_dgpu_monitors() {
   done
 }
 
-# NVIDIA GPUs require a kernel parameter (nvidia-drm.modeset=1) to work
-# properly with Wayland compositors like Gamescope. Without it, the GPU
-# won't expose DRM (Direct Rendering Manager) devices, and Gamescope
-# won't be able to take over the display.
-#
-# This function checks if the parameter is already set in the running
-# kernel's command line (/proc/cmdline). If not, it detects the bootloader
-# (Limine, GRUB, or systemd-boot) and offers to add it automatically.
-# A reboot is required after adding the parameter.
+# NVIDIA GPUs need DRM KMS (modeset) so Wayland compositors like Gamescope
+# can take over the display. Omarchy enables this the same way on any
+# bootloader: a modprobe option plus nvidia modules in the initramfs
+# (see /usr/share/omarchy/install/hardware/nvidia.sh). A kernel cmdline
+# nvidia-drm.modeset=1 also counts if the user set it on Limine, GRUB, or
+# systemd-boot.
+nvidia_modeset_is_enabled() {
+  local modeset
+  if [[ -r /sys/module/nvidia_drm/parameters/modeset ]]; then
+    modeset=$(< /sys/module/nvidia_drm/parameters/modeset)
+    [[ "$modeset" == [Yy1]* ]] && return 0
+  fi
+  if grep -rqsE '^[[:space:]]*options[[:space:]]+nvidia_drm[[:space:]].*modeset=1' /etc/modprobe.d 2>/dev/null; then
+    return 0
+  fi
+  grep -qE "nvidia[-_]drm\.modeset=1" /proc/cmdline 2>/dev/null
+}
+
+# /boot is often 0700 on Omarchy (ESP), so tests under /boot use sudo.
+# Limine is checked first because it is Omarchy's default, but GRUB and
+# systemd-boot are valid if the user replaced it.
+detect_bootloader() {
+  if [[ -f /etc/default/limine ]] || [[ -d /etc/limine-entry-tool.d ]] \
+    || sudo test -f /boot/limine.conf || sudo test -f /boot/limine/limine.conf; then
+    echo limine
+  elif sudo test -d /boot/loader/entries; then
+    echo systemd-boot
+  elif [[ -f /etc/default/grub ]]; then
+    echo grub
+  else
+    echo unknown
+  fi
+}
+
 check_nvidia_kernel_params() {
   local lspci_output
   lspci_output=$(/usr/bin/lspci 2>/dev/null)
@@ -289,144 +327,124 @@ check_nvidia_kernel_params() {
 
   echo ""
   echo "================================================================"
-  echo "  NVIDIA KERNEL PARAMETER CHECK"
+  echo "  NVIDIA DRM MODESET CHECK"
   echo "================================================================"
   echo ""
 
-  if grep -qE "nvidia[-_]drm\.modeset=1" /proc/cmdline 2>/dev/null; then
-    info "nvidia-drm.modeset=1 is already configured"
+  if nvidia_modeset_is_enabled; then
+    info "NVIDIA DRM modeset is already enabled"
     return 0
   fi
 
-  warn "nvidia-drm.modeset=1 is NOT SET - required for Gaming Mode!"
+  warn "NVIDIA DRM modeset is NOT SET - required for Gaming Mode!"
   echo ""
 
-  local bootloader=""
-  local config_file=""
-
-  if [ -f /boot/limine.conf ]; then
-    bootloader="limine"; config_file="/boot/limine.conf"
-  elif [ -f /boot/limine/limine.conf ]; then
-    bootloader="limine"; config_file="/boot/limine/limine.conf"
-  elif [ -d /boot/loader/entries ]; then
-    bootloader="systemd-boot"
-  elif [ -f /etc/default/grub ]; then
-    bootloader="grub"
-  fi
-
+  local bootloader
+  bootloader=$(detect_bootloader)
   info "Detected bootloader: $bootloader"
-
-  case "$bootloader" in
-    limine)
-      info "Limine config: $config_file"
-      read -p "Add nvidia-drm.modeset=1 to Limine config? [Y/n]: " -n 1 -r
-      echo
-      if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        configure_limine_nvidia "$config_file"
-      else
-        warn "Skipping - you'll need to add nvidia-drm.modeset=1 manually"
-        show_manual_nvidia_instructions
-      fi
-      ;;
-    systemd-boot)
-      echo ""
-      echo "  systemd-boot detected. You need to add nvidia-drm.modeset=1"
-      echo "  to your boot entry in /boot/loader/entries/*.conf"
-      echo ""
-      show_manual_nvidia_instructions
-      ;;
-    grub)
-      echo ""
-      read -p "Add nvidia-drm.modeset=1 to GRUB config? [Y/n]: " -n 1 -r
-      echo
-      if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        configure_grub_nvidia
-      else
-        warn "Skipping - you'll need to add nvidia-drm.modeset=1 manually"
-        show_manual_nvidia_instructions
-      fi
-      ;;
-    *)
-      echo ""
-      warn "Could not detect bootloader type"
-      show_manual_nvidia_instructions
-      ;;
-  esac
-}
-
-# Adds nvidia-drm.modeset=1 to the Limine bootloader config.
-# Limine stores kernel command line parameters on lines starting with "cmdline:".
-# This appends the parameter to the end of that line. A backup is created first
-# in case something goes wrong.
-configure_limine_nvidia() {
-  local config_file="$1"
-
-  info "Backing up Limine config..."
-  sudo cp "$config_file" "${config_file}.backup.$(date +%Y%m%d%H%M%S)" || {
-    err "Failed to backup Limine config"
-    return 1
-  }
-
-  info "Adding nvidia-drm.modeset=1 to Limine cmdline..."
-
-  if sudo sed -i '/^[[:space:]]*cmdline:/ s/$/ nvidia-drm.modeset=1/' "$config_file"; then
-    if grep -q "nvidia-drm.modeset=1" "$config_file"; then
-      info "Successfully added nvidia-drm.modeset=1 to Limine config"
-      echo ""
-      echo "  ✓ Limine config updated"
-      echo "  ✓ Changes will take effect after reboot"
-      echo ""
-      NEEDS_REBOOT=1
-    else
-      err "Failed to add parameter - please add manually"
-      show_manual_nvidia_instructions
-    fi
+  echo ""
+  echo "  Omarchy enables this via /etc/modprobe.d/nvidia.conf and"
+  echo "  /etc/mkinitcpio.conf.d/nvidia.conf (works with any bootloader)."
+  echo ""
+  read -p "Enable NVIDIA DRM modeset (modprobe + mkinitcpio)? [Y/n]: " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    configure_omarchy_nvidia_modeset "$bootloader"
   else
-    err "Failed to modify Limine config"
+    warn "Skipping - you'll need to enable NVIDIA DRM modeset manually"
     show_manual_nvidia_instructions
   fi
 }
 
-# Adds nvidia-drm.modeset=1 to GRUB's kernel parameters.
-# GRUB stores defaults in /etc/default/grub — after modifying it, grub-mkconfig
-# must be run to regenerate the actual boot config at /boot/grub/grub.cfg.
-configure_grub_nvidia() {
-  local grub_default="/etc/default/grub"
+# Writes the same two files as Omarchy's nvidia.sh, then rebuilds the
+# initramfs. Limine/UKI uses limine-mkinitcpio; GRUB, systemd-boot, and
+# unknown fall back to mkinitcpio -P. Does not edit bootloader cmdline.
+configure_omarchy_nvidia_modeset() {
+  local bootloader="$1"
+  local modprobe_file="/etc/modprobe.d/nvidia.conf"
+  local mkinit_file="/etc/mkinitcpio.conf.d/nvidia.conf"
 
-  info "Backing up GRUB config..."
-  sudo cp "$grub_default" "${grub_default}.backup.$(date +%Y%m%d%H%M%S)" || {
-    err "Failed to backup GRUB config"
+  sudo mkdir -p /etc/modprobe.d /etc/mkinitcpio.conf.d || {
+    err "Failed to create NVIDIA config directories"
+    show_manual_nvidia_instructions
     return 1
   }
 
-  info "Adding nvidia-drm.modeset=1 to GRUB..."
-
-  if ! grep -q "nvidia-drm.modeset=1" "$grub_default"; then
-    sudo sed -i 's/\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)/\1 nvidia-drm.modeset=1/' "$grub_default"
-
-    if grep -q "nvidia-drm.modeset=1" "$grub_default"; then
-      info "Regenerating GRUB config..."
-      sudo grub-mkconfig -o /boot/grub/grub.cfg || {
-        err "Failed to regenerate GRUB config"
-        return 1
-      }
-      info "Successfully configured GRUB for NVIDIA"
-      NEEDS_REBOOT=1
-    else
-      err "Failed to add parameter to GRUB"
+  if [[ -f "$modprobe_file" ]] && grep -qE '^[[:space:]]*options[[:space:]]+nvidia_drm[[:space:]].*modeset=1' "$modprobe_file"; then
+    info "$modprobe_file already has modeset=1"
+  elif [[ -f "$modprobe_file" ]]; then
+    info "Appending modeset=1 to $modprobe_file..."
+    printf '%s\n' 'options nvidia_drm modeset=1' | sudo tee -a "$modprobe_file" >/dev/null || {
+      err "Failed to update $modprobe_file"
       show_manual_nvidia_instructions
-    fi
+      return 1
+    }
+  else
+    info "Writing $modprobe_file..."
+    printf '%s\n' 'options nvidia_drm modeset=1' | sudo tee "$modprobe_file" >/dev/null || {
+      err "Failed to write $modprobe_file"
+      show_manual_nvidia_instructions
+      return 1
+    }
   fi
+
+  if [[ -f "$mkinit_file" ]] && grep -q 'nvidia_drm' "$mkinit_file"; then
+    info "$mkinit_file already loads nvidia_drm"
+  elif [[ -f "$mkinit_file" ]]; then
+    info "Appending nvidia modules to $mkinit_file..."
+    printf '%s\n' 'MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' | sudo tee -a "$mkinit_file" >/dev/null || {
+      err "Failed to update $mkinit_file"
+      show_manual_nvidia_instructions
+      return 1
+    }
+  else
+    info "Writing $mkinit_file..."
+    printf '%s\n' 'MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)' | sudo tee "$mkinit_file" >/dev/null || {
+      err "Failed to write $mkinit_file"
+      show_manual_nvidia_instructions
+      return 1
+    }
+  fi
+
+  if [[ "$bootloader" == "limine" ]] && command -v limine-mkinitcpio >/dev/null 2>&1; then
+    info "Rebuilding initramfs with limine-mkinitcpio..."
+    sudo limine-mkinitcpio || {
+      err "limine-mkinitcpio failed"
+      show_manual_nvidia_instructions
+      return 1
+    }
+  else
+    info "Rebuilding initramfs with mkinitcpio -P..."
+    sudo mkinitcpio -P || {
+      err "mkinitcpio -P failed"
+      show_manual_nvidia_instructions
+      return 1
+    }
+  fi
+
+  info "NVIDIA DRM modeset configured — reboot required"
+  echo ""
+  echo "  ✓ /etc/modprobe.d/nvidia.conf"
+  echo "  ✓ /etc/mkinitcpio.conf.d/nvidia.conf"
+  echo "  ✓ initramfs rebuilt ($bootloader)"
+  echo ""
+  NEEDS_REBOOT=1
 }
 
 show_manual_nvidia_instructions() {
   cat <<'MSG'
   Manual configuration required:
-  Limine: Add nvidia-drm.modeset=1 to cmdline in /boot/limine.conf
-  systemd-boot: Add to options in /boot/loader/entries/*.conf
-  GRUB: Add to GRUB_CMDLINE_LINUX_DEFAULT, then run grub-mkconfig -o /boot/grub/grub.cfg
+    /etc/modprobe.d/nvidia.conf:
+      options nvidia_drm modeset=1
+    /etc/mkinitcpio.conf.d/nvidia.conf:
+      MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
+    Then rebuild: limine-mkinitcpio  (Limine/UKI)
+                 mkinitcpio -P      (GRUB, systemd-boot, or other)
+
+  A kernel cmdline nvidia-drm.modeset=1 on Limine, GRUB, or systemd-boot
+  is also sufficient if you already set it that way.
 MSG
-  warn "Gaming Mode may not work correctly without nvidia-drm.modeset=1"
+  warn "Gaming Mode may not work correctly without NVIDIA DRM modeset"
 }
 
 # Sets NVIDIA-specific environment variables needed for Gamescope to work
@@ -820,15 +838,15 @@ check_steam_config() {
 
   local missing_groups=()
 
-  if ! groups | grep -qw 'video'; then
+  if ! user_in_group_db "$USER" video; then
     missing_groups+=("video")
   fi
 
-  if ! groups | grep -qw 'input'; then
+  if ! user_in_group_db "$USER" input; then
     missing_groups+=("input")
   fi
 
-  if ! groups | grep -qw 'wheel'; then
+  if ! user_in_group_db "$USER" wheel; then
     missing_groups+=("wheel")
   fi
 
@@ -1238,7 +1256,7 @@ setup_xbox_controllers() {
   echo blacklist xpad | sudo tee /etc/modprobe.d/blacklist-xpad.conf >/dev/null
   echo hid_xpadneo | sudo tee /etc/modules-load.d/xpadneo.conf >/dev/null
 
-  if ! id -nG "$USER" | grep -qw input; then
+  if ! user_in_group_db "$USER" input; then
     sudo usermod -aG input "$USER"
     NEEDS_RELOGIN=1
     info "Added $USER to the input group (login required to take effect)"
@@ -1557,7 +1575,7 @@ setup_session_switching() {
     if [[ "$dgpu_type" == "NVIDIA" ]]; then
       err "NVIDIA GPU detected but no DRM card found!"
       echo ""
-      echo "  This usually means nvidia-drm.modeset=1 is not set."
+      echo "  This usually means NVIDIA DRM modeset is not enabled."
       echo "  The installer will configure this - please complete the setup"
       echo "  and REBOOT before running this section again."
       echo ""
@@ -2190,6 +2208,59 @@ NVIDIA_WRAPPER
 log() { logger -t gamescope-wrapper "$*"; echo "$*"; }
 
 SAVED_STATE_FILE="$HOME/.cache/deckshift/saved-state"
+DECKSHIFT_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/nosignal.deckshift"
+DECKSHIFT_CAPTURE="$DECKSHIFT_STATE/capture"
+DECKSHIFT_CURRENT="$DECKSHIFT_STATE/current"
+DECKSHIFT_LOG=""
+
+deckshift_capture_on() {
+    [[ -f "$DECKSHIFT_CAPTURE" ]]
+}
+
+deckshift_prune_logs() {
+    shopt -s nullglob
+    local files=("$DECKSHIFT_STATE"/session-*.log)
+    local n=${#files[@]}
+    (( n > 10 )) || return 0
+    local sorted
+    mapfile -t sorted < <(printf '%s\n' "${files[@]}" | sort)
+    local drop=$(( ${#sorted[@]} - 10 ))
+    local i
+    for (( i = 0; i < drop; i++ )); do
+        rm -f "${sorted[i]}"
+    done
+}
+
+# Opt-in file log for the panel. switch-to-gaming creates the dated file and
+# writes its path to `current`; we append. If this session started without
+# that preamble (SDDM autologin still on Gaming Mode), create one here.
+deckshift_begin_session_log() {
+    deckshift_capture_on || return 0
+    mkdir -p "$DECKSHIFT_STATE" || return 0
+    local log=""
+    if [[ -f "$DECKSHIFT_CURRENT" ]]; then
+        log=$(tr -d '\n' < "$DECKSHIFT_CURRENT")
+    fi
+    if [[ -z "$log" || ! -f "$log" ]]; then
+        log="$DECKSHIFT_STATE/session-$(date +%Y%m%d-%H%M%S).log"
+        printf '%s\n' "$log" > "$DECKSHIFT_CURRENT"
+        {
+            echo "=== DeckShift session ==="
+            echo "started: $(date -Iseconds)"
+            echo "user: ${USER:-}"
+            echo "note: wrapper created this log (no switch-to-gaming current file)"
+        } > "$log"
+        deckshift_prune_logs
+    fi
+    {
+        echo "=== gamescope session start ==="
+        echo "started: $(date -Iseconds)"
+    } >> "$log"
+    DECKSHIFT_LOG="$log"
+    exec >>"$log" 2>&1
+}
+
+deckshift_begin_session_log
 
 # Capture the user's actual pre-Gaming-Mode CPU governor + power profile so we
 # can restore those exact values on exit, instead of guessing "powersave/balanced"
@@ -2316,6 +2387,10 @@ cleanup() {
     sudo -n /usr/local/bin/gamescope-nm-stop 2>/dev/null || true
     restore_balanced_mode
     rm -f /tmp/.gaming-session-active
+    if [[ -n "$DECKSHIFT_LOG" ]]; then
+        echo "=== gamescope session end ===" >> "$DECKSHIFT_LOG" 2>/dev/null || true
+        sync -f "$DECKSHIFT_LOG" 2>/dev/null || sync
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -2368,7 +2443,11 @@ export GTK_IM_MODULE=Steam
 export STEAM_DISABLE_AUDIO_DEVICE_SWITCHING=1
 export STEAM_ENABLE_VOLUME_HANDLER=1
 
-/usr/share/gamescope-session-plus/gamescope-session-plus steam
+if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL -eL /usr/share/gamescope-session-plus/gamescope-session-plus steam
+else
+    /usr/share/gamescope-session-plus/gamescope-session-plus steam
+fi
 rc=$?
 
 exit $rc
@@ -2436,6 +2515,43 @@ OS_SESSION_SELECT
 
   sudo tee "$switch_script" > /dev/null << 'SWITCH_SCRIPT'
 #!/bin/bash
+# Opt-in session log for the nosignal.deckshift panel. The flag lives in the
+# XDG state dir so it survives this Hyprland session dying at the SDDM restart.
+DECKSHIFT_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/nosignal.deckshift"
+DECKSHIFT_CAPTURE="$DECKSHIFT_STATE/capture"
+DECKSHIFT_CURRENT="$DECKSHIFT_STATE/current"
+if [[ -f "$DECKSHIFT_CAPTURE" ]]; then
+  mkdir -p "$DECKSHIFT_STATE"
+  DECKSHIFT_LOG="$DECKSHIFT_STATE/session-$(date +%Y%m%d-%H%M%S).log"
+  {
+    echo "=== DeckShift switch-to-gaming ==="
+    echo "started: $(date -Iseconds)"
+    echo "user: ${USER:-}"
+    ENV_CONF="$HOME/.config/environment.d/gamescope-session-plus.conf"
+    if [[ -f "$ENV_CONF" ]]; then
+      echo "--- gamescope-session-plus.conf ---"
+      cat "$ENV_CONF"
+      echo "---"
+    fi
+  } > "$DECKSHIFT_LOG"
+  printf '%s\n' "$DECKSHIFT_LOG" > "$DECKSHIFT_CURRENT"
+  shopt -s nullglob
+  prune_files=("$DECKSHIFT_STATE"/session-*.log)
+  prune_n=${#prune_files[@]}
+  if (( prune_n > 10 )); then
+    mapfile -t prune_sorted < <(printf '%s\n' "${prune_files[@]}" | sort)
+    prune_drop=$(( ${#prune_sorted[@]} - 10 ))
+    for (( prune_i = 0; prune_i < prune_drop; prune_i++ )); do
+      rm -f "${prune_sorted[prune_i]}"
+    done
+  fi
+  if command -v stdbuf >/dev/null 2>&1; then
+    exec > >(stdbuf -oL tee -a "$DECKSHIFT_LOG") 2>&1
+  else
+    exec > >(tee -a "$DECKSHIFT_LOG") 2>&1
+  fi
+fi
+
 # Inhibit suspend FIRST - prevents suspend when monitor detaches during switch
 sudo -n systemctl mask --runtime sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null
 sudo -n /usr/local/bin/gaming-session-switch gaming 2>/dev/null || {
@@ -3228,6 +3344,26 @@ verify_installation() {
   fi
 
   echo ""
+  echo "  SESSION LOG CAPTURE:"
+  echo "  --------------------"
+  local wrapper_bin="/usr/local/bin/gamescope-session-nm-wrapper"
+  local switch_bin="/usr/local/bin/switch-to-gaming"
+  if [[ -f "$wrapper_bin" ]] && grep -q "omarchy/nosignal.deckshift" "$wrapper_bin" \
+       && grep -q 'DECKSHIFT_CAPTURE' "$wrapper_bin"; then
+    echo "  ✓ session wrapper honors opt-in capture under ~/.local/state/omarchy/nosignal.deckshift"
+  else
+    echo "  ✗ session wrapper is missing capture logging — re-run the installer"
+    all_ok=false
+  fi
+  if [[ -f "$switch_bin" ]] && grep -q "omarchy/nosignal.deckshift" "$switch_bin" \
+       && grep -q 'DECKSHIFT_CAPTURE' "$switch_bin"; then
+    echo "  ✓ switch-to-gaming starts a dated session log when capture is on"
+  else
+    echo "  ✗ switch-to-gaming is missing capture logging — re-run the installer"
+    all_ok=false
+  fi
+
+  echo ""
   echo "  PORTAL RECOVERY AUTOSTART:"
   echo "  --------------------------"
   local hypr_autostart_lua="$HOME/.config/hypr/autostart.lua"
@@ -3305,8 +3441,12 @@ verify_installation() {
     all_ok=false
   fi
 
-  if groups 2>/dev/null | grep -qw input; then
-    echo "  ✓ User in 'input' group"
+  if user_in_group_db "$USER" input; then
+    if user_in_group_session input; then
+      echo "  ✓ User in 'input' group"
+    else
+      echo "  ✓ User in 'input' group (log out for this session to pick it up)"
+    fi
   else
     echo "  ✗ User NOT in 'input' group (required for keybind)"
     keybind_ok=false
@@ -3347,16 +3487,24 @@ verify_installation() {
   echo ""
   echo "  USER GROUPS:"
   echo "  ------------"
-  local user_groups
-  user_groups=$(groups 2>/dev/null)
+  local needs_logout=false
   for grp in video input wheel; do
-    if echo "$user_groups" | grep -qw "$grp"; then
-      printf "  ✓ User is in '%s' group\n" "$grp"
+    if user_in_group_db "$USER" "$grp"; then
+      if user_in_group_session "$grp"; then
+        printf "  ✓ User is in '%s' group\n" "$grp"
+      else
+        printf "  ✓ User is in '%s' group (log out for this session to pick it up)\n" "$grp"
+        needs_logout=true
+      fi
     else
       printf "  ✗ User is NOT in '%s' group\n" "$grp"
       all_ok=false
     fi
   done
+  if $needs_logout; then
+    echo "  → Group membership is saved; Super+Shift+R / passwordless session"
+    echo "    switch need a new login before they apply."
+  fi
 
   echo ""
   echo "  SERVICE STATUS:"
@@ -3416,7 +3564,7 @@ verify_installation() {
 #   1. Authenticate sudo (and clear cached credentials first for a fresh prompt)
 #   2. Validate we're on an Omarchy system
 #   3. Install Steam dependencies and GPU drivers
-#   4. Configure NVIDIA kernel parameters (if applicable)
+#   4. Configure NVIDIA DRM modeset (if applicable)
 #   5. Set NVIDIA environment variables (if applicable)
 #   6. Install script requirements and performance permissions
 #   7. Set up session switching (the big one — all the scripts and configs)
@@ -3452,8 +3600,8 @@ execute_setup() {
     echo "  IMPORTANT: REBOOT REQUIRED"
     echo "================================================================"
     echo ""
-    echo "  Bootloader configuration has been updated (nvidia-drm.modeset=1)."
-    echo "  You MUST reboot for the kernel parameter to take effect."
+    echo "  Boot-time configuration was updated (NVIDIA DRM modeset and/or drivers)."
+    echo "  You MUST reboot for it to take effect."
     echo ""
     if [ "$NEEDS_RELOGIN" -eq 1 ]; then
       echo "  Additionally, user groups were updated (video/input/wheel)."
