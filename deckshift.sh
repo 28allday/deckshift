@@ -318,6 +318,50 @@ detect_bootloader() {
   fi
 }
 
+# Returns 0 if the NVIDIA GPU is reachable only through a Thunderbolt/USB4
+# tunnel (i.e. it is an eGPU). Such a device is enumerated only after the
+# initramfs stage (the TB link needs userspace authorization), so
+# early-loading the nvidia kernel modules in the initramfs is pointless (the
+# device is not there yet) and can wedge the boot with a blank screen: the
+# nvidia driver probes the TB/USB bus before the eGPU has appeared. When the
+# eGPU is connected later, udev loads the driver on demand and the modprobe
+# options (nvidia_drm modeset=1) still apply to that on-demand load.
+#
+# Detection: walk the physical sysfs path of the nvidia PCI device up toward
+# the host bridge and flag it if any ancestor is
+#   - class 0x088000 (PCI bridge: Thunderbolt), or
+#   - a PCI bridge with a vendor that is neither a common platform vendor
+#     nor a known native PCIe switch vendor (i.e. a foreign tunnel
+#     controller, such as a dock's TB4 bridge).
+#
+# Override: DECKSHIFT_FORCE_NVIDIA_EARLY_LOAD=1 forces the early load.
+nvidia_is_thunderbolt_egpu() {
+  [[ "${DECKSHIFT_FORCE_NVIDIA_EARLY_LOAD:-0}" == "1" ]] && return 1
+
+  local dev path link class vendor
+  local known_platform_vendors=" 0x1000 0x1022 0x103c 0x1172 0x144d 0x1af4 0x8086 "
+
+  for dev in /sys/bus/pci/devices/*; do
+    [[ "$(cat "$dev/vendor" 2>/dev/null)" == "0x10de" ]] || continue
+    path=$(readlink -f "$dev") || continue
+    link=$(dirname "$path")
+    while [[ -f "$link/class" ]]; do
+      class=$(cat "$link/class" 2>/dev/null)
+      if [[ "$class" == "0x088000" ]]; then
+        return 0
+      fi
+      if [[ "$class" == 0x06* ]]; then
+        vendor=$(cat "$link/vendor" 2>/dev/null)
+        if [[ -n "$vendor" && ! $known_platform_vendors == *" $vendor "* ]]; then
+          return 0
+        fi
+      fi
+      link=$(dirname "$link")
+    done
+  done
+  return 1
+}
+
 check_nvidia_kernel_params() {
   local lspci_output
   lspci_output=$(/usr/bin/lspci 2>/dev/null)
@@ -388,7 +432,15 @@ configure_omarchy_nvidia_modeset() {
     }
   fi
 
-  if [[ -f "$mkinit_file" ]] && grep -q 'nvidia_drm' "$mkinit_file"; then
+  if nvidia_is_thunderbolt_egpu; then
+    info "NVIDIA is behind a Thunderbolt/USB4 bridge (eGPU)."
+    info "Skipping mkinitcpio early load; the driver loads on demand."
+    # Remove any previously written early-load line (migration).
+    if [[ -f "$mkinit_file" ]] && grep -q 'nvidia_drm' "$mkinit_file"; then
+      info "Removing legacy early-load line from $mkinit_file..."
+      sudo sed -i '/MODULES+=.*nvidia/d' "$mkinit_file"
+    fi
+  elif [[ -f "$mkinit_file" ]] && grep -q 'nvidia_drm' "$mkinit_file"; then
     info "$mkinit_file already loads nvidia_drm"
   elif [[ -f "$mkinit_file" ]]; then
     info "Appending nvidia modules to $mkinit_file..."
@@ -425,8 +477,12 @@ configure_omarchy_nvidia_modeset() {
   info "NVIDIA DRM modeset configured — reboot required"
   echo ""
   echo "  ✓ /etc/modprobe.d/nvidia.conf"
-  echo "  ✓ /etc/mkinitcpio.conf.d/nvidia.conf"
-  echo "  ✓ initramfs rebuilt ($bootloader)"
+  if nvidia_is_thunderbolt_egpu; then
+    echo "  - initramfs left unchanged (eGPU: driver loads on demand)"
+  else
+    echo "  ✓ /etc/mkinitcpio.conf.d/nvidia.conf"
+    echo "  ✓ initramfs rebuilt ($bootloader)"
+  fi
   echo ""
   NEEDS_REBOOT=1
 }
