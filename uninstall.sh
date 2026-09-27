@@ -228,6 +228,14 @@ do
   drop "$f"
 done
 
+# deckshift's guarded NVIDIA deck-mode env block, appended to the steam
+# gaming-session config (replaces the legacy /etc/environment.d file).
+if [ -f /etc/gamescope-session-plus/sessions.d/steam ] && \
+   grep -qF '# deckshift-nvidia-deckmode' /etc/gamescope-session-plus/sessions.d/steam; then
+  info "Removing NVIDIA deck-mode block from /etc/gamescope-session-plus/sessions.d/steam"
+  sudo sed -i '/# deckshift-nvidia-deckmode/,/^fi$/d' /etc/gamescope-session-plus/sessions.d/steam
+fi
+
 # --------------------------------- 4. revert in-place changes to other files ---
 
 info "Reverting in-place modifications"

@@ -455,6 +455,15 @@ MSG
 # GBM_BACKEND=nvidia-drm         — Use NVIDIA's DRM backend for buffer allocation
 # __GLX_VENDOR_LIBRARY_NAME=nvidia — Use NVIDIA's GLX implementation
 # __VK_LAYER_NV_optimus=NVIDIA_only — On Optimus laptops, force Vulkan to use NVIDIA
+#
+# The variables are written into the gaming session's per-client config
+# (/etc/gamescope-session-plus/sessions.d/steam), guarded on the presence of
+# /dev/nvidia0. An earlier version wrote them to /etc/environment.d, which
+# applies them to every session via PAM; on an iGPU-only boot (eGPU
+# unplugged) the nvidia device nodes do not exist, and forcing the nvidia
+# GLX/GBM vendors there makes Steam and MangoApp crash at GL init
+# (segfaults inside libGLX_nvidia) -> a lit black screen that never shows
+# anything.
 install_nvidia_deckmode_env() {
   local lspci_output
   lspci_output=$(/usr/bin/lspci 2>/dev/null)
@@ -463,23 +472,53 @@ install_nvidia_deckmode_env() {
     return 0
   fi
 
-  local env_file="/etc/environment.d/90-nvidia-gamescope.conf"
+  # Migrate away from the legacy global env file: it poisons every session
+  # (including the desktop) and breaks iGPU-only boots.
+  local legacy_env_file="/etc/environment.d/90-nvidia-gamescope.conf"
+  if [ -f "$legacy_env_file" ]; then
+    info "Removing legacy global NVIDIA env file: $legacy_env_file"
+    sudo rm -f "$legacy_env_file"
+  fi
 
-  if [ -f "$env_file" ]; then
-    info "NVIDIA gamescope env already present: $env_file"
+  local session_dir="/etc/gamescope-session-plus/sessions.d"
+  local session_file="${session_dir}/steam"
+  local marker="# deckshift-nvidia-deckmode"
+
+  if [ -f "$session_file" ] && grep -qF "$marker" "$session_file"; then
+    info "NVIDIA gamescope env already present: $session_file"
     return 0
   fi
 
-  info "Installing NVIDIA gamescope env (Deck-mode style)..."
-  sudo mkdir -p /etc/environment.d
+  info "Installing NVIDIA gamescope env (Deck-mode style, guarded)..."
+  sudo mkdir -p "$session_dir"
 
-  sudo tee "$env_file" >/dev/null <<'EOF'
-GBM_BACKEND=nvidia-drm
-__GLX_VENDOR_LIBRARY_NAME=nvidia
-__VK_LAYER_NV_optimus=NVIDIA_only
+  local block
+  block=$(cat <<EOF
+${marker}
+# Only force NVIDIA when its device node exists. On an iGPU-only boot
+# (eGPU unplugged) /dev/nvidia0 is absent and forcing the nvidia GLX/GBM
+# vendors there crashes Steam/MangoApp at GL init (black screen).
+if [ -e /dev/nvidia0 ]; then
+  export GBM_BACKEND=nvidia-drm
+  export __GLX_VENDOR_LIBRARY_NAME=nvidia
+  export __VK_LAYER_NV_optimus=NVIDIA_only
+fi
 EOF
+)
 
-  info "Installed $env_file"
+  if [ -f "$session_file" ]; then
+    printf '%s\n' "$block" | sudo tee -a "$session_file" >/dev/null || {
+      err "Failed to update $session_file"
+      return 1
+    }
+  else
+    { printf '#!/bin/bash\n'; printf '%s\n' "$block"; } | sudo tee "$session_file" >/dev/null || {
+      err "Failed to write $session_file"
+      return 1
+    }
+  fi
+
+  info "Installed $session_file (active only when /dev/nvidia0 exists)"
   NEEDS_RELOGIN=1
 }
 
