@@ -176,8 +176,8 @@ work; verify against a live system before assuming they still hold.
 - Panel QML follows the style of the sibling `nosignal.*` shell plugins
   (2-space indent, `[menu]` theme tokens, one-shot fetch on open, no polling).
 - Release flow: bump `DECKSHIFT_VERSION`, README header + changelog entry,
-  commit `vX.Y.Z — summary`, annotated tag, `git push forgejo master &&
-  git push forgejo vX.Y.Z` (covers both remotes).
+  commit `vX.Y.Z — summary`, annotated tag, `git push origin master &&
+  git push origin vX.Y.Z`.
 
 ## Testing checklist for future changes
 
@@ -235,14 +235,11 @@ DeckShift is a "Gaming Mode" launcher for Omarchy laptops (Acer Nitro and simila
 
 **Omarchy-only — NOT a distro-portable script.** Earlier docs/headers said "distro-portability is the next direction"; that's been retracted (2026-05-12). The script can freely depend on `omarchy-*` helpers, Walker/elephant, Hyprland-specific paths, SDDM, etc. without fallbacks. The "non-Omarchy stub" fallback added briefly in v0.1.5 was removed in v0.1.6. Don't add `command -v omarchy-* || ...` defensive patterns to this code.
 
-**Remotes (dual-push pattern):**
-- Forgejo: `https://git.no-signal.uk/nosignal/deckshift.git`
-- GitHub: `https://github.com/28allday/deckshift.git`
-- The `forgejo` remote is wired to push to BOTH URLs, so `git push forgejo` updates both. (The `github` remote also exists separately.)
+**Remote:** `https://github.com/28allday/deckshift.git`
 
 **Status as of 2026-05-18:** Published, v0.1.12 latest. Recent commits: TUI hardening, hybrid PRIME offload (NVIDIA dGPU + iGPU), installer cleanup, Steam bootstrap fix, Walker refresh fix, Gaming Mode power-state revert fix, README rewrite + demo video, TUI layout polish. Return-from-Gaming-Mode fixes shipped 2026-05-09 (sleep + portal v1), 2026-05-12 v0.1.4 (portal-recovery race fix), 2026-05-12 v0.1.5 (clipboard via Walker restart), 2026-05-12 v0.1.6 (dropped non-Omarchy fallback), 2026-05-17 v0.1.7 (AMD Steam bootstrap fix + dep cleanup), 2026-05-18 v0.1.8 (NVIDIA+HDMI 60 Hz launch fix), 2026-05-18 v0.1.9 (legacy CUSTOM_REFRESH_RATES auto-migration), 2026-05-18 v0.1.10 (Settings TUI layout polish — single centred panel column) — see below.
 
-**v0.1.4 is the first actually-git-tagged release.** v0.1.0–v0.1.3 only existed as "v0.1.x —" prefixes in commit messages; no annotated tags. Going forward, tag releases with `git tag -a vX.Y.Z -m "..."` and `git push forgejo vX.Y.Z` (covers both remotes).
+**v0.1.4 is the first actually-git-tagged release.** v0.1.0–v0.1.3 only existed as "v0.1.x —" prefixes in commit messages; no annotated tags. Going forward, tag releases with `git tag -a vX.Y.Z -m "..."` and `git push origin vX.Y.Z`.
 
 **Gaming Mode → Desktop return-side gotchas (both fixed 2026-05-09):**
 
