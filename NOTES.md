@@ -8,6 +8,58 @@ Parked 2026-08-28 pending the maintainer's hardware pass: full fresh
 install, Gaming Mode round-trip, uninstall test. Tag v0.2.2 once that
 comes back clean (gate details below).
 
+## 2026-10-09 — PR #11 merged (Qt 6.12 Color shadowing); issue #12 confirmed
+
+**PR #11** (bomouridsen) — MERGED @ `ecd250e`. Qt 6.12 exports a `Color`
+singleton from QtQuick that shadows `qs.Commons.Color` for bare `Color.` lookups
+→ undefined → black icon, unthemed panel. Panel now imports
+`qs.Commons as Commons` and qualifies the tokens; the bar icon drops its
+explicit `Color.accent` and takes WidgetButton's default (bar foreground), so
+**the icon is no longer accent-coloured** — accepted as-is. Any new QML must use
+`Commons.Color`, never bare `Color`.
+
+Tested after merge (6.12 not in Arch repos yet, box on 6.11.2): a Quickshell
+harness in headless cage with symlinked `Commons`/`Ui`, loading the plugin's
+BarWidget + Panel, plus a stand-in `Color` singleton imported last to simulate
+the collision. Pre-merge + stand-in reproduced the reporter's exact warnings;
+merged + stand-in kept every token. No change on 6.11 except the icon colour.
+The panel itself is a layer-shell `PanelWindow`, which cage can't show, so the
+panel colours were checked by property probe, not by pixels.
+
+**Issue #12** (same reporter) — CONFIRMED, open. `gamescope-session-plus`
+picks the binary from `$GAMESCOPE_BIN` (falls back to `/usr/bin/gamescope`) and
+never consults `PATH`, so the `/usr/local/lib/gamescope-nvidia` wrapper that
+`gamescope-session-nm-wrapper` prepends to `PATH` has **never run since v0.1.0**
+— `--force-composition` has never reached gamescope on NVIDIA. Fix is
+`export GAMESCOPE_BIN=…/gamescope-nvidia/gamescope` in the NVIDIA branch, but
+that turns force-composition on for every NVIDIA user for the first time
+(behaviour + perf change) — own release, own test. May explain #4 and #8.
+
+## 2026-09-27 — PR #9 changes requested, PR #10 declined
+
+**PR #9** (ishcabittle, skip mkinitcpio nvidia early-load for TB/USB4 eGPUs) —
+CHANGES REQUESTED. `nvidia_is_thunderbolt_egpu()` tested against mocked sysfs:
+- vendor-allowlist heuristic flags INTERNAL GPUs behind PLX (`10b5`) or
+  ASMedia (`1b21`) switches as eGPUs; ASMedia is also the dock's bridge vendor,
+  so an allowlist can't separate them.
+- misses Intel-chip TB docks (bridges are `8086`/`0x060400`; `0x088000` is the
+  host NHI — a sibling, never an ancestor of the GPU).
+- the "remove legacy line" migration is unreachable: `check_nvidia_kernel_params`
+  returns early when `nvidia_modeset_is_enabled` (modprobe.d line already there).
+- eGPU branch still rebuilds initramfs but prints "left unchanged".
+Suggested a kernel-provided signal (`removable` attr / thunderbolt ancestry) —
+untested here, no TB on this box. Real impact if merged was low (Omarchy boxes
+already have modeset on, so the code never runs there).
+
+**PR #10** (same author, move NVIDIA env vars from
+`/etc/environment.d/90-nvidia-gamescope.conf` into
+`/etc/gamescope-session-plus/sessions.d/steam` guarded on `/dev/nvidia0`) —
+DECLINED + closed. Technically sound (gamescope-session-plus sources USR → ETC →
+LOCAL sessions.d files additively, then /etc/environment.d, so no regression),
+but it only matters when no NVIDIA card is present at boot (unplugged eGPU).
+Maintainer call: current path works, eGPU unsupported — revisit alongside #9 if
+eGPU support ever becomes a target. Gave the author a per-user workaround.
+
 ## 2026-09-12 — PR #8 reviewed (NVIDIA stale Steam UI); MangoHud finding
 
 PR #8 (Kuthumy) fixes stale Steam UI regions on NVIDIA by setting
