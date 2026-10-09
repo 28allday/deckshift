@@ -23,7 +23,9 @@ BarWidget {
     bar: root.bar
     text: "󰊴"
     tooltipText: "Gaming Mode"
-    foreground: Color.accent
+    // Icon colour comes from WidgetButton's default (the bar foreground). An
+    // explicit Color.accent breaks on Qt 6.12, where QtQuick exports its own
+    // Color singleton that shadows qs.Commons.Color.
     fixedWidth: root.bar && root.bar.vertical ? -1 : Style.space(27)
     fixedHeight: root.bar && root.bar.vertical ? Style.space(26) : -1
     onPressed: function(b) {
