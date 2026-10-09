@@ -2,11 +2,24 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
-## Current state (2026-09-12) — PARKED; v0.2.2 on master UNTAGGED
+## Current state (2026-10-09 night) — PARKED; v0.2.2 on master UNTAGGED
 
-Parked 2026-08-28 pending the maintainer's hardware pass: full fresh
-install, Gaming Mode round-trip, uninstall test. Tag v0.2.2 once that
-comes back clean (gate details below).
+Parked for a full hands-on test day with the maintainer (planned 2026-10-10).
+Master includes PR #11. Order:
+
+1. **Hardware pass** (still outstanding since 2026-08-28): fresh install, Gaming
+   Mode round-trip, uninstall. Clean → tag + push v0.2.2 (gate details below).
+2. **#12 fix** — export `GAMESCOPE_BIN` to the NVIDIA wrapper. Test on NVIDIA:
+   session log must show `/usr/local/lib/gamescope-nvidia/gamescope` and
+   `--force-composition`; compare the Steam UI, check performance; ship as
+   v0.2.3, not inside v0.2.2.
+3. **#8** — with #12 applied, does the stale Steam UI still happen? If not,
+   close #8 as superseded (thank Kuthumy); if yes, back to the opt-in ask.
+4. **#4** — after #12 ships, ask the reporters to retest.
+5. **#9** — no reply since changes requested 09-27; candidate to close like
+   #10 (eGPU not a target, reopen if that changes).
+
+Push to the `github` remote only (forgejo retired).
 
 ## 2026-10-09 — PR #11 merged (Qt 6.12 Color shadowing); issue #12 confirmed
 
