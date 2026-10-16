@@ -2,6 +2,40 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
+## 2026-10-16 night — #12 LIVE TEST PASSED (maintainer: "tested and seems correct"); test files REMOVED
+
+- launch.log: `/usr/bin/gamescope --force-composition -W 2560 -H 1440 --nested-refresh 60
+  --prefer-output HDMI-A-2 … --prefer-vk-device 10de:2d04` (RTX 5060 Ti), session
+  21:22–22:05, looked right to the maintainer. sessions.d/steam + ~/.local/state/deckshift-12-test
+  deleted (sessions.d empty again, as before).
+- Same journal shows the OLD July install's bugs that master already fixes:
+  cleanup ran twice and the second pass restored powersave/balanced over the
+  saved performance/performance state; "Keybind monitor NOT started".
+- ⏭️ commit the fix (ASK) → full test day with the installer from the branch
+  (v0.2.2 pass + #12) → v0.2.3 → reply #12, ask #4 reporters, recheck #8.
+
+## 2026-10-16 — #12 fix written (UNCOMMITTED, branch fix-12-gamescope-bin); live test SET UP, maintainer tests later
+
+- ⚠️ The DeckShift installed on the desktop is the **17 July** build (pre-v0.2.0):
+  the 10-10 hardware pass never happened, v0.2.2 still untagged and never run here.
+- Fix (deckshift.sh, session wrapper heredoc): NVIDIA + wrapper executable →
+  `export GAMESCOPE_BIN=/usr/local/lib/gamescope-nvidia/gamescope` (replaces the
+  useless PATH prepend) + a log line. User's sessions.d/steam is sourced later,
+  so their own GAMESCOPE_BIN still wins. bash -n + shellcheck clean; dry run
+  through the real get_gamescope_binary → `/usr/bin/gamescope --force-composition …`
+  (without the fix: plain /usr/bin/gamescope). Wrapper passes the session's
+  `--help` option probes through.
+- Live test (option 1, no sudo): `~/.config/gamescope-session-plus/sessions.d/steam`
+  sets GAMESCOPE_BIN to a logging shim `~/.local/state/deckshift-12-test/gamescope`
+  → execs the NVIDIA wrapper. Each real launch appends the full command line to
+  `~/.local/state/deckshift-12-test/launch.log`. ⏭️ Maintainer: Gaming Mode → look at the
+  Steam UI + a game's FPS → back out; then check launch.log shows
+  --force-composition. **UNDO after:** delete that sessions.d/steam file and
+  the deckshift-12-test dir (sessions.d was empty before).
+- Then: good → commit fix, full test day (installer from branch = v0.2.2 pass +
+  #12), ship as v0.2.3, reply on #12 + ask #4 reporters / recheck #8. Bad
+  (perf/visual) → rethink before any release.
+
 ## Current state (2026-10-09 night) — PARKED; v0.2.2 on master UNTAGGED
 
 Parked for a full hands-on test day with the maintainer (planned 2026-10-10).
