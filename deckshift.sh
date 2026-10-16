@@ -2188,7 +2188,7 @@ NVIDIA_WRAPPER
   # entry point for the entire gaming session and orchestrates everything:
   #
   #   1. Enables performance mode (CPU governor → performance, GPU max power)
-  #   2. Adds NVIDIA wrapper to PATH if needed
+  #   2. Points GAMESCOPE_BIN at the NVIDIA wrapper if needed
   #   3. Starts NetworkManager for Steam's network access
   #   4. Launches steam-library-mount daemon for external drive detection
   #   5. Starts the keybind monitor (listens for Super+Shift+R to exit)
@@ -2397,8 +2397,12 @@ trap cleanup EXIT INT TERM
 # Enable performance mode immediately on session start
 enable_performance_mode
 
-if /usr/bin/lspci 2>/dev/null | grep -qi nvidia; then
-    export PATH="/usr/local/lib/gamescope-nvidia:$PATH"
+# gamescope-session-plus runs $GAMESCOPE_BIN (default /usr/bin/gamescope) and
+# never looks gamescope up on PATH, so the wrapper has to be named here. A
+# GAMESCOPE_BIN set in the user's sessions.d/steam is read later and still wins.
+if /usr/bin/lspci 2>/dev/null | grep -qi nvidia && [[ -x /usr/local/lib/gamescope-nvidia/gamescope ]]; then
+    export GAMESCOPE_BIN=/usr/local/lib/gamescope-nvidia/gamescope
+    log "NVIDIA: gamescope runs through $GAMESCOPE_BIN (--force-composition)"
 fi
 
 sudo -n /usr/local/bin/gamescope-nm-start 2>/dev/null || {
