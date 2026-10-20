@@ -920,9 +920,9 @@ check_steam_config() {
 #    can relax permissions when the devices are detected at boot.
 #
 # 2. SUDOERS RULES — Allow members of the "video" group to run specific
-#    sysctl commands (kernel scheduler tuning, VM settings, network buffers)
-#    and nvidia-smi commands without entering a password. These are narrowly
-#    scoped — only the exact commands needed, not blanket sudo access.
+#    nvidia-smi (persistence mode, power limit) and powerprofilesctl without
+#    entering a password, with each argument pinned to the values the
+#    gaming session actually passes.
 #
 # 3. MEMLOCK LIMITS — Increase the memory lock limit to 2GB. Games using
 #    esync/fsync need to lock memory pages to avoid latency spikes.
@@ -983,23 +983,11 @@ UDEV_RULES
 
     local tee_output
     tee_output=$(sudo tee "$sudoers_file" << 'SUDOERS_PERF' 2>&1
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_autogroup_enabled=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_migration_cost_ns=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_min_granularity_ns=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_latency_ns=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.swappiness=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_ratio=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_background_ratio=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_writeback_centisecs=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_expire_centisecs=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w fs.inotify.max_user_watches=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w fs.inotify.max_user_instances=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w fs.file-max=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w net.core.rmem_max=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w net.core.wmem_max=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi -pm *
-%video ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi -pl *
-%video ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl set *
+# Arguments are pinned exactly: a bare "*" in sudoers also matches extra
+# arguments (e.g. nvidia-smi -f <file>), which would allow writing files as root.
+%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi -pm 0, /usr/bin/nvidia-smi -pm 1
+%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi ^-pl [0-9]{1,4}$
+%video ALL=(root) NOPASSWD: /usr/bin/powerprofilesctl set performance, /usr/bin/powerprofilesctl set balanced, /usr/bin/powerprofilesctl set power-saver
 SUDOERS_PERF
 )
     local tee_exit=$?
@@ -2310,7 +2298,7 @@ enable_performance_mode() {
     fi
 
     # Set power profile to performance — sudo -n bypasses the polkit prompt
-    # (NOPASSWD allowed for `powerprofilesctl set *` in /etc/sudoers.d/gaming-session-switch)
+    # (NOPASSWD allowed for `powerprofilesctl set <profile>` in /etc/sudoers.d/gaming-mode-sysctl)
     if command -v powerprofilesctl &>/dev/null; then
         sudo -n powerprofilesctl set performance 2>/dev/null || \
             powerprofilesctl set performance 2>/dev/null && log "Power profile set to performance"
