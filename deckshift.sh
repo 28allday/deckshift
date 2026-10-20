@@ -1362,8 +1362,8 @@ setup_shell_plugin() {
     else
       sudo -u "$current_user" tee -a "$hypr_bindings_lua" > /dev/null << HYPR_PANEL_LUA
 
--- DeckShift — toggle the Gaming Mode control panel
-o.bind("SUPER + ALT + G", "Gaming Mode panel", "omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}")
+-- DeckShift — toggle the Gaming Mode control panel (Super+Alt+G is Omarchy's ungroup)
+o.bind("SUPER + SHIFT + ALT + D", "Gaming Mode panel", "omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}")
 HYPR_PANEL_LUA
       info "Added panel keybind (Super+Alt+G) to bindings.lua"
     fi
@@ -2761,11 +2761,12 @@ def find_keyboards():
 def monitor_keyboards(keyboards):
     meta_pressed = False
     shift_pressed = False
+    alt_pressed = False
     from selectors import DefaultSelector, EVENT_READ
     selector = DefaultSelector()
     for kbd in keyboards:
         selector.register(kbd, EVENT_READ)
-    log(f"Monitoring {len(keyboards)} keyboard(s) for Super+Shift+R...")
+    log(f"Monitoring {len(keyboards)} keyboard(s) for Super+Shift+Alt+R...")
     try:
         while True:
             for key, mask in selector.select():
@@ -2778,9 +2779,11 @@ def monitor_keyboards(keyboards):
                             meta_pressed = event.value > 0
                         elif event.code in (ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT):
                             shift_pressed = event.value > 0
+                        elif event.code in (ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT):
+                            alt_pressed = event.value > 0
                         elif event.code == ecodes.KEY_R and event.value == 1:
-                            if meta_pressed and shift_pressed:
-                                log("Super+Shift+R detected! Switching to desktop...")
+                            if meta_pressed and shift_pressed and alt_pressed:
+                                log("Super+Shift+Alt+R detected! Switching to desktop...")
                                 subprocess.run(['/usr/local/bin/switch-to-desktop'])
                                 return
                 except Exception as e:
@@ -3071,9 +3074,8 @@ SUDOERS_SWITCH
     else
       sudo -u "$current_user" tee -a "$hypr_bindings_lua" > /dev/null << 'HYPR_GAMING_LUA'
 
--- DeckShift — reclaim SUPER+SHIFT+S from the Omarchy default, bind Gaming Mode
-hl.unbind("SUPER + SHIFT + S")
-o.bind("SUPER + SHIFT + S", "Gaming Mode", "/usr/local/bin/switch-to-gaming")
+-- DeckShift — Gaming Mode (Super+Shift+Alt+S; leaves Omarchy's Super+Shift+S alone)
+o.bind("SUPER + SHIFT + ALT + S", "Gaming Mode", "/usr/local/bin/switch-to-gaming")
 HYPR_GAMING_LUA
       info "Added Gaming Mode keybind to bindings.lua"
     fi
@@ -3640,8 +3642,8 @@ execute_setup() {
     echo ""
     echo "  Dependencies, GPU configuration, and session switching are ready."
     echo ""
-    echo "  To switch to Gaming Mode: Press Super+Shift+S"
-    echo "  To return to Desktop:     Press Super+Shift+R"
+    echo "  To switch to Gaming Mode: Press Super+Shift+Alt+S"
+    echo "  To return to Desktop:     Press Super+Shift+Alt+R"
     echo ""
   fi
 
