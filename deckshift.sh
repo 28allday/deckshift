@@ -2505,7 +2505,8 @@ OS_SESSION_SELECT
   #      monitor briefly disconnects during the display manager restart
   #   2. Updates SDDM config to auto-login to the gaming session
   #   3. Kills any leftover gamescope processes from a previous session
-  #   4. Switches to VT2 (virtual terminal) to avoid display conflicts
+  #   4. Switches to VT8 (virtual terminal) to avoid display conflicts; VT8
+  #      has no getty, so the switch shows black rather than a tty2 login
   #   5. Restarts SDDM, which auto-logs into Gaming Mode
   info "Creating switch-to-gaming script..."
   local switch_script="/usr/local/bin/switch-to-gaming"
@@ -2580,7 +2581,7 @@ if [[ -f "$ENV_CONF" ]]; then
   fi
 fi
 
-sudo -n chvt 2 2>/dev/null || true
+sudo -n chvt 8 2>/dev/null || true
 sleep 0.3
 sudo -n systemctl restart sddm
 SWITCH_SCRIPT
@@ -2683,7 +2684,7 @@ sleep 2
 # not background/disown the restart to "make it survive": on a Relogin=true
 # system it would then fire a second time and kill the Hyprland session that
 # just came up.
-sudo -n chvt 2 2>/dev/null || true
+sudo -n chvt 8 2>/dev/null || true
 sleep 0.5
 # Atomic restart — stop+start (with stop and start as separate sudo calls)
 # was unreliable: stop/start aren't NOPASSWD-allowed individually (only
