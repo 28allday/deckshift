@@ -363,11 +363,14 @@ SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
 # GPU-specific (NVIDIA shown):
 VULKAN_ADAPTER=10de:25ac
 GBM_BACKEND=nvidia-drm
+MANGOHUD_CONFIG=alpha=0,background_alpha=0
 ```
 
 Display keys (`SCREEN_WIDTH`, `SCREEN_HEIGHT`, `CUSTOM_REFRESH_RATES`, `OUTPUT_CONNECTOR`) and hybrid-PRIME env vars are **owned exclusively by the control panel**. Re-running the installer preserves your choices.
 
 **NVIDIA note**: Gamescope on NVIDIA is currently capped at 2560×1440. The control panel labels any higher resolution as unsupported.
+
+DeckShift keeps MangoApp rendering with fully transparent foreground and background on NVIDIA. The active layer forces Gamescope to repaint Steam UI damage correctly without displaying telemetry; games remain GPU-accelerated. This also hides the performance overlay while the workaround is active.
 
 ### Shader Cache
 

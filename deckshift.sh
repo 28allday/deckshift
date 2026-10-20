@@ -2135,6 +2135,9 @@ UDISKS_POLKIT
       nvidia_device_id=$(/usr/bin/lspci -nn | grep -i nvidia | grep -oP '\[10de:\K[0-9a-fA-F]+' | head -1)
       [[ -n "$nvidia_device_id" ]] && set_conf_key VULKAN_ADAPTER "10de:${nvidia_device_id}"
       set_conf_key GBM_BACKEND nvidia-drm
+      # Keep MangoApp repainting without showing the overlay. This prevents
+      # stale Steam UI regions caused by missed damage updates on NVIDIA.
+      set_conf_key MANGOHUD_CONFIG alpha=0,background_alpha=0
       unset_conf_key ADAPTIVE_SYNC
       unset_conf_key ENABLE_GAMESCOPE_HDR
       unset_conf_key DRI_PRIME
@@ -2142,6 +2145,7 @@ UDISKS_POLKIT
     "Intel")
       unset_conf_key VULKAN_ADAPTER
       unset_conf_key GBM_BACKEND
+      unset_conf_key MANGOHUD_CONFIG
       unset_conf_key ADAPTIVE_SYNC
       unset_conf_key ENABLE_GAMESCOPE_HDR
       ;;
@@ -2151,6 +2155,7 @@ UDISKS_POLKIT
       set_conf_key ENABLE_GAMESCOPE_HDR 1
       unset_conf_key VULKAN_ADAPTER
       unset_conf_key GBM_BACKEND
+      unset_conf_key MANGOHUD_CONFIG
       ;;
   esac
 
