@@ -2,6 +2,28 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
+## 2026-10-31 — PR #13 (lo3w3n): sudoers, update guard, VT8, panel key
+
+Finished on top of the contributor's branch. Kept: pinned sudoers rules, `omarchy
+update`, VT8, panel key. Dropped: moving `Super+Shift+S` and `Super+Shift+R`,
+which are deliberate. Added: replacing older sudoers rules on a re-run, moving an
+existing panel bind, docs.
+
+- `/etc/sudoers.d` is 0750 root, so `-f` from a normal user is ALWAYS false. Any
+  check on a file in there has to go through `sudo test -f`. The session sudoers
+  check (`gaming-session-switch`) still has the same blind `-f`; it's harmless
+  there because the file is rewritten either way.
+- A `*` in sudoers matches across arguments. `sudo -l <cmd>` can't test that for a
+  wheel user, because the wheel rule matches everything. Use `sudo -n -k` with a
+  harmless help command, plus a control that must be refused.
+- `bash -n` can't see code that has landed inside a heredoc. The PipeWire config
+  in `setup_performance_permissions` has a bare `}` line, so don't look for the
+  end of that function by searching for one.
+
+Hardware test before merge, on NVIDIA: run the installer, enter and leave Gaming
+Mode, then `sudo -n -k powerprofilesctl set --help extra` must be refused while
+`sudo -n -k powerprofilesctl set balanced` works.
+
 ## 2026-10-16 night — #12 LIVE TEST PASSED (maintainer: "tested and seems correct"); test files REMOVED
 
 - launch.log: `/usr/bin/gamescope --force-composition -W 2560 -H 1440 --nested-refresh 60
