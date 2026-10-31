@@ -39,7 +39,7 @@ set -Euo pipefail
 # -u: Treat unset variables as errors (catches typos in variable names)
 # -o pipefail: A pipeline fails if ANY command in it fails, not just the last one
 
-DECKSHIFT_VERSION="0.2.2"
+DECKSHIFT_VERSION="0.2.3"
 
 # Plugin id for the omarchy-shell control panel. Must match the "id" in
 # plugins/<id>/manifest.json — the shell keys everything (shell.json entries,

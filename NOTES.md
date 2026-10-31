@@ -2,6 +2,20 @@
 
 Working notes for future development sessions. User-facing docs live in README.md.
 
+## 2026-10-31 — v0.2.3 tagged (includes everything planned for v0.2.2)
+
+Hardware tested on NVIDIA: install over an older build, Gaming Mode round trip,
+settings restored, new sudoers rules in real use. NOT hardware tested before the
+tag, at the maintainer's call: `./uninstall.sh` and an install from nothing.
+Also not exercised: `omarchy update` with updates pending, and replacing old
+sudoers rules under real sudo (sandbox only). If reports come in, look there first.
+
+v0.2.2 was never tagged. Master carried that number from August, without the
+sudoers fix, so the new number tells those installs apart.
+
+Still open: #8 (does the stale Steam UI still happen with the #12 fix? if not,
+close as superseded), #4 (reporters asked to retest), #9 (candidate to close).
+
 ## 2026-10-31 — PR #13 (lo3w3n): sudoers, update guard, VT8, panel key
 
 Finished on top of the contributor's branch. Kept: pinned sudoers rules, `omarchy
