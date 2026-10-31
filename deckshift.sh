@@ -514,6 +514,7 @@ check_steam_dependencies() {
     info "Upgrading system..."
     # Omarchy blocks direct `pacman -Syu`; its updater adds snapshots and migrations.
     if command -v omarchy >/dev/null 2>&1; then
+      info "If the update offers a reboot, run ./deckshift.sh again afterwards."
       omarchy update || die "Failed to upgrade system"
     else
       sudo pacman -Syu || die "Failed to upgrade system"
@@ -934,7 +935,16 @@ setup_performance_permissions() {
   local sudoers_file="/etc/sudoers.d/gaming-mode-sysctl"
   local needs_setup=false
 
-  if [ ! -f "$udev_rules_file" ] || [ ! -f "$sudoers_file" ]; then
+  # Rules from earlier versions ended in a bare "*", which also matches extra
+  # arguments, and allowed sysctl -w. Replace them whatever is answered below:
+  # declining passwordless controls must not leave the looser rules in place.
+  if sudo grep -qE '/sysctl -w |nvidia-smi -p[ml] \*|powerprofilesctl set \*' "$sudoers_file" 2>/dev/null; then
+    info "Replacing older performance sudoers rules with stricter ones..."
+    write_performance_sudoers "$sudoers_file" || err "Could not replace $sudoers_file"
+  fi
+
+  # /etc/sudoers.d is readable only by root, so the sudoers file needs sudo to see.
+  if [ ! -f "$udev_rules_file" ] || ! sudo test -f "$sudoers_file"; then
     needs_setup=true
   fi
 
@@ -976,27 +986,15 @@ UDEV_RULES
     fi
   fi
 
-  if [[ -f "$sudoers_file" ]]; then
+  if sudo test -f "$sudoers_file"; then
     info "Performance sudoers already exist at $sudoers_file"
   else
-    info "Creating sudoers rule for Performance Mode sysctl tuning..."
+    info "Creating sudoers rule for the performance controls..."
 
-    local tee_output
-    tee_output=$(sudo tee "$sudoers_file" << 'SUDOERS_PERF' 2>&1
-# Arguments are pinned exactly: a bare "*" in sudoers also matches extra
-# arguments (e.g. nvidia-smi -f <file>), which would allow writing files as root.
-%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi -pm 0, /usr/bin/nvidia-smi -pm 1
-%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi ^-pl [0-9]{1,4}$
-%video ALL=(root) NOPASSWD: /usr/bin/powerprofilesctl set performance, /usr/bin/powerprofilesctl set balanced, /usr/bin/powerprofilesctl set power-saver
-SUDOERS_PERF
-)
-    local tee_exit=$?
-
-    if [[ $tee_exit -eq 0 ]]; then
-      sudo chmod 0440 "$sudoers_file"
+    if write_performance_sudoers "$sudoers_file"; then
       info "Performance sudoers created successfully"
     else
-      err "Failed to create performance sudoers file (exit code: $tee_exit)"
+      err "Failed to create performance sudoers file"
     fi
   fi
 
@@ -1029,6 +1027,33 @@ PIPEWIRECONF
 
   info "Performance permissions configured"
   return 0
+}
+
+# Installs the performance sudoers rules. A broken file in /etc/sudoers.d can
+# lock every user out of sudo, so the rules are checked with visudo first and
+# moved into place in one step. sudo ignores names containing a dot, so the
+# .new file is never read while it is being written.
+write_performance_sudoers() {
+  local sudoers_file="$1"
+  local tmp status=0
+  tmp=$(mktemp) || return 1
+  cat > "$tmp" << 'SUDOERS_PERF'
+# Arguments are pinned exactly: a bare "*" in sudoers also matches extra
+# arguments (e.g. nvidia-smi -f <file>), which would allow writing files as root.
+%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi -pm 0, /usr/bin/nvidia-smi -pm 1
+%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi ^-pl [0-9]{1,4}$
+%video ALL=(root) NOPASSWD: /usr/bin/powerprofilesctl set performance, /usr/bin/powerprofilesctl set balanced, /usr/bin/powerprofilesctl set power-saver
+SUDOERS_PERF
+  if ! visudo -cf "$tmp" > /dev/null; then
+    err "New sudoers rules failed the visudo check; leaving $sudoers_file as it is"
+    status=1
+  elif ! sudo install -o root -g root -m 0440 "$tmp" "${sudoers_file}.new" \
+      || ! sudo mv -f "${sudoers_file}.new" "$sudoers_file"; then
+    sudo rm -f "${sudoers_file}.new"
+    status=1
+  fi
+  rm -f "$tmp"
+  return "$status"
 }
 
 # Configures shader cache settings for better gaming performance.
