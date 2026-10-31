@@ -1,6 +1,6 @@
 # DeckShift
 
-**Version 0.2.2** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Alt+G`).
+**Version 0.2.2** — Steam Deck-style gaming mode for [Omarchy](https://omarchy.com). Press `Super+Shift+S` to enter Gaming Mode (Steam Big Picture in Gamescope), `Super+Shift+R` to return to your desktop — or drive the whole thing from the control panel in your bar (`Super+Shift+Alt+D`).
 
 Lineage: forked from Super-Shift-S-Omarchy-Deck-Mode, briefly renamed Omarchy Deck, then renamed DeckShift.
 
@@ -33,7 +33,7 @@ The gum-based `deckshift-settings` TUI is gone, replaced by **`nosignal.deckshif
 - **Live capability data.** Picking a monitor re-derives the resolution and refresh lists from that monitor's mode list on the spot. A connector saved earlier but not currently plugged in is labelled `not connected` rather than silently offering nothing.
 - **Fixed: saved settings never reached the running session.** Both the TUI and the panel write `~/.config/environment.d/gamescope-session-plus.conf`, then nudge systemd so the change applies without a re-login. The TUI called `systemctl --user import-environment KEY`, which copies a variable *from the calling process's environment* — i.e. the value read at login, the one just replaced. It propagated nothing. The panel calls `set-environment KEY=VALUE` instead, which actually pushes the new value.
 - Keys not managed by DeckShift (`ADAPTIVE_SYNC`, `HDR_ENABLED`, anything hand-added) are preserved across saves, as before.
-- Re-running `./deckshift.sh` installs the plugin, wires it into `shell.json` (both `plugins[]` and the bar), adds a `Super+Alt+G` toggle keybind, and removes the old TUI and its app-menu entry. Already-running shells need `omarchy-restart-shell` to pick the panel up.
+- Re-running `./deckshift.sh` installs the plugin, wires it into `shell.json` (both `plugins[]` and the bar), adds a `Super+Shift+Alt+D` toggle keybind, and removes the old TUI and its app-menu entry. Already-running shells need `omarchy-restart-shell` to pick the panel up.
 - `--verify` gained a control-panel section: plugin files present, registered in `plugins[]` (a plugin on disk but missing there loads its bar icon and then no-ops on every summon), bar icon, and keybind.
 
 **Requires Omarchy 4** for the panel — the installer skips it with a warning on older builds, where Gaming Mode itself still works via the keybinds.
@@ -42,7 +42,7 @@ Older releases are summarised in the [Changelog](#changelog).
 
 ## Control panel
 
-After install, open the panel from the **game-controller icon in your bar**, press `Super+Alt+G`, or run `omarchy-shell shell toggle nosignal.deckshift`. It changes Gaming Mode display settings without editing config files:
+After install, open the panel from the **game-controller icon in your bar**, press `Super+Shift+Alt+D`, or run `omarchy-shell shell toggle nosignal.deckshift`. It changes Gaming Mode display settings without editing config files:
 
 | Option | What it sets in `gamescope-session-plus.conf` |
 |---|---|
@@ -98,7 +98,7 @@ chmod +x deckshift.sh
 
 The installer is fully interactive and walks you through each step.
 
-After install, open the control panel (bar icon or `Super+Alt+G`) and pick:
+After install, open the control panel (bar icon or `Super+Shift+Alt+D`) and pick:
 
 - A monitor
 - A resolution / refresh rate
@@ -115,7 +115,7 @@ Press **Save**, then **Launch Gaming Mode** (or `Super+Shift+S`). Turn on **Capt
 | Enter Gaming Mode | `Super + Shift + S` |
 | Return to Desktop | `Super + Shift + R` *(global keybind monitor catches it inside Gamescope)* |
 | Return to Desktop (alternative) | Steam → Power → **Switch to Desktop** |
-| Open control panel | Bar icon, `Super + Alt + G`, or `omarchy-shell shell toggle nosignal.deckshift` |
+| Open control panel | Bar icon, `Super + Shift + Alt + D`, or `omarchy-shell shell toggle nosignal.deckshift` |
 | Launch Gaming Mode from panel | **Launch Gaming Mode** button (confirms first) |
 | Capture a session log | Panel **Capture session** toggle, then launch. Logs land in `~/.local/state/omarchy/nosignal.deckshift/` (10 newest kept) |
 | Open session logs | **View** in the panel (terminal `cat` of the newest session log) |
@@ -596,7 +596,7 @@ sudo rm -f /usr/share/applications/deckshift-settings.desktop
 # Strip the Hyprland keybind + portal-recovery autostart lines
 # Omarchy 4 (Lua config):
 sed -i '/switch-to-gaming/d; /SUPER + SHIFT + S/d' ~/.config/hypr/bindings.lua
-sed -i '/nosignal.deckshift/d; /SUPER + ALT + G/d' ~/.config/hypr/bindings.lua
+sed -i '/nosignal.deckshift/d; /DeckShift — toggle the Gaming Mode control panel/d' ~/.config/hypr/bindings.lua
 sed -i '/deckshift-portal-recovery/d' ~/.config/hypr/autostart.lua
 # Pre-4 Omarchy (.conf config):
 sed -i '/switch-to-gaming/d' ~/.config/hypr/bindings.conf
@@ -614,6 +614,7 @@ yay -Rns gamescope-session-git gamescope-session-steam-git
 
 ## Changelog
 
+- **Unreleased** — Stricter sudoers rules for the Gaming Mode performance controls; re-running `./deckshift.sh` replaces the older rules. The installer no longer stops at the system update on Omarchy, whose pacman hook blocks a direct `pacman -Syu`. Session switches no longer flash a `tty2` login prompt. The control panel key moves from `Super+Alt+G` to `Super+Shift+Alt+D`, because the old key also moved windows out of groups; re-running moves an existing bind. Thanks to lo3w3n.
 - **v0.2.2** — Screen sharing after a Gaming Mode round-trip actually fixed: `switch-to-desktop` writes the recovery marker before the teardown that used to kill it, and `deckshift-portal-recovery` restarts the portal frontend Steam poisons inside gamescope (no more pipewire bounce, and it self-triggers on the broken state). Exiting Gaming Mode no longer clobbers the CPU governor/power profile with a guess. New `./uninstall.sh` with `--dry-run`. Opt-in Gaming Mode session logs from the control panel (dated files under `~/.local/state/omarchy/nosignal.deckshift/`, 10 newest kept). NVIDIA DRM modeset is detected via Omarchy's modprobe/sysfs (not only `/proc/cmdline`) and enabled with the same `nvidia.conf` drop-ins + initramfs rebuild, any bootloader. `--verify` reads `/etc/group` for `video`/`input`/`wheel` so group checks pass without logging out.
 - **v0.2.1** — Fix fresh installs failing with "target not found": dropped `lib32-openal`, `lib32-sdl2-compat` and `lib32-libvdpau` (removed from Arch multilib); installer now skips repo-dropped packages instead of aborting.
 - **v0.2.0** — Native Omarchy 4 control panel (bar icon + panel, `Super+Alt+G`) replaces the gum settings TUI; saved settings now actually reach the running session (`set-environment` fix); Launch Gaming Mode from the panel behind a confirm.

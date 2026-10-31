@@ -512,7 +512,13 @@ check_steam_dependencies() {
   echo
   if [[ ! $REPLY =~ ^[Nn]$ ]]; then
     info "Upgrading system..."
-    sudo pacman -Syu || die "Failed to upgrade system"
+    # Omarchy blocks direct `pacman -Syu`; its updater adds snapshots and migrations.
+    if command -v omarchy >/dev/null 2>&1; then
+      info "If the update offers a reboot, run ./deckshift.sh again afterwards."
+      omarchy update || die "Failed to upgrade system"
+    else
+      sudo pacman -Syu || die "Failed to upgrade system"
+    fi
   fi
   echo ""
 
@@ -915,9 +921,9 @@ check_steam_config() {
 #    can relax permissions when the devices are detected at boot.
 #
 # 2. SUDOERS RULES — Allow members of the "video" group to run specific
-#    sysctl commands (kernel scheduler tuning, VM settings, network buffers)
-#    and nvidia-smi commands without entering a password. These are narrowly
-#    scoped — only the exact commands needed, not blanket sudo access.
+#    nvidia-smi (persistence mode, power limit) and powerprofilesctl without
+#    entering a password, with each argument pinned to the values the
+#    gaming session actually passes.
 #
 # 3. MEMLOCK LIMITS — Increase the memory lock limit to 2GB. Games using
 #    esync/fsync need to lock memory pages to avoid latency spikes.
@@ -929,7 +935,16 @@ setup_performance_permissions() {
   local sudoers_file="/etc/sudoers.d/gaming-mode-sysctl"
   local needs_setup=false
 
-  if [ ! -f "$udev_rules_file" ] || [ ! -f "$sudoers_file" ]; then
+  # Rules from earlier versions ended in a bare "*", which also matches extra
+  # arguments, and allowed sysctl -w. Replace them whatever is answered below:
+  # declining passwordless controls must not leave the looser rules in place.
+  if sudo grep -qE '/sysctl -w |nvidia-smi -p[ml] \*|powerprofilesctl set \*' "$sudoers_file" 2>/dev/null; then
+    info "Replacing older performance sudoers rules with stricter ones..."
+    write_performance_sudoers "$sudoers_file" || err "Could not replace $sudoers_file"
+  fi
+
+  # /etc/sudoers.d is readable only by root, so the sudoers file needs sudo to see.
+  if [ ! -f "$udev_rules_file" ] || ! sudo test -f "$sudoers_file"; then
     needs_setup=true
   fi
 
@@ -971,39 +986,15 @@ UDEV_RULES
     fi
   fi
 
-  if [[ -f "$sudoers_file" ]]; then
+  if sudo test -f "$sudoers_file"; then
     info "Performance sudoers already exist at $sudoers_file"
   else
-    info "Creating sudoers rule for Performance Mode sysctl tuning..."
+    info "Creating sudoers rule for the performance controls..."
 
-    local tee_output
-    tee_output=$(sudo tee "$sudoers_file" << 'SUDOERS_PERF' 2>&1
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_autogroup_enabled=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_migration_cost_ns=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_min_granularity_ns=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w kernel.sched_latency_ns=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.swappiness=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_ratio=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_background_ratio=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_writeback_centisecs=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w vm.dirty_expire_centisecs=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w fs.inotify.max_user_watches=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w fs.inotify.max_user_instances=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w fs.file-max=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w net.core.rmem_max=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/sysctl -w net.core.wmem_max=*
-%video ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi -pm *
-%video ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi -pl *
-%video ALL=(ALL) NOPASSWD: /usr/bin/powerprofilesctl set *
-SUDOERS_PERF
-)
-    local tee_exit=$?
-
-    if [[ $tee_exit -eq 0 ]]; then
-      sudo chmod 0440 "$sudoers_file"
+    if write_performance_sudoers "$sudoers_file"; then
       info "Performance sudoers created successfully"
     else
-      err "Failed to create performance sudoers file (exit code: $tee_exit)"
+      err "Failed to create performance sudoers file"
     fi
   fi
 
@@ -1036,6 +1027,33 @@ PIPEWIRECONF
 
   info "Performance permissions configured"
   return 0
+}
+
+# Installs the performance sudoers rules. A broken file in /etc/sudoers.d can
+# lock every user out of sudo, so the rules are checked with visudo first and
+# moved into place in one step. sudo ignores names containing a dot, so the
+# .new file is never read while it is being written.
+write_performance_sudoers() {
+  local sudoers_file="$1"
+  local tmp status=0
+  tmp=$(mktemp) || return 1
+  cat > "$tmp" << 'SUDOERS_PERF'
+# Arguments are pinned exactly: a bare "*" in sudoers also matches extra
+# arguments (e.g. nvidia-smi -f <file>), which would allow writing files as root.
+%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi -pm 0, /usr/bin/nvidia-smi -pm 1
+%video ALL=(root) NOPASSWD: /usr/bin/nvidia-smi ^-pl [0-9]{1,4}$
+%video ALL=(root) NOPASSWD: /usr/bin/powerprofilesctl set performance, /usr/bin/powerprofilesctl set balanced, /usr/bin/powerprofilesctl set power-saver
+SUDOERS_PERF
+  if ! visudo -cf "$tmp" > /dev/null; then
+    err "New sudoers rules failed the visudo check; leaving $sudoers_file as it is"
+    status=1
+  elif ! sudo install -o root -g root -m 0440 "$tmp" "${sudoers_file}.new" \
+      || ! sudo mv -f "${sudoers_file}.new" "$sudoers_file"; then
+    sudo rm -f "${sudoers_file}.new"
+    status=1
+  fi
+  rm -f "$tmp"
+  return "$status"
 }
 
 # Configures shader cache settings for better gaming performance.
@@ -1352,36 +1370,45 @@ setup_shell_plugin() {
   sudo -u "$current_user" omarchy plugin rescan >/dev/null 2>&1 || true
 
   # Panel toggle keybind. Same Lua-first, .conf-fallback rule as the Gaming Mode
-  # bind above. SUPER+ALT+G is unclaimed by the Omarchy defaults, so unlike
-  # SUPER+SHIFT+S it needs no hl.unbind() first.
+  # bind above. SUPER+SHIFT+ALT+D is unclaimed by the Omarchy defaults, so unlike
+  # SUPER+SHIFT+S it needs no hl.unbind() first. Earlier versions used
+  # SUPER+ALT+G, which is also Omarchy's "Move window out of group": both fired,
+  # so an existing bind on that key is moved. A bind on any other key was chosen
+  # by the user and is left alone.
   local hypr_bindings_lua="${user_home}/.config/hypr/bindings.lua"
   local hypr_bindings_conf="${user_home}/.config/hypr/bindings.conf"
   if [[ -f "$hypr_bindings_lua" ]]; then
-    if grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
+    if grep -q "\"SUPER + ALT + G\".*toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
+      sudo -u "$current_user" sed -i --follow-symlinks "/toggle ${DECKSHIFT_PLUGIN_ID}/s/\"SUPER + ALT + G\"/\"SUPER + SHIFT + ALT + D\"/" "$hypr_bindings_lua"
+      info "Moved panel keybind to Super+Shift+Alt+D in bindings.lua"
+    elif grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
       info "Panel keybind already exists in bindings.lua"
     else
       sudo -u "$current_user" tee -a "$hypr_bindings_lua" > /dev/null << HYPR_PANEL_LUA
 
 -- DeckShift — toggle the Gaming Mode control panel
-o.bind("SUPER + ALT + G", "Gaming Mode panel", "omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}")
+o.bind("SUPER + SHIFT + ALT + D", "Gaming Mode panel", "omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}")
 HYPR_PANEL_LUA
-      info "Added panel keybind (Super+Alt+G) to bindings.lua"
+      info "Added panel keybind (Super+Shift+Alt+D) to bindings.lua"
     fi
   elif [[ -f "$hypr_bindings_conf" ]]; then
-    if grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_conf" 2>/dev/null; then
+    if grep -q "bindd = SUPER ALT, G,.*toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_conf" 2>/dev/null; then
+      sed -i --follow-symlinks "/toggle ${DECKSHIFT_PLUGIN_ID}/s/bindd = SUPER ALT, G,/bindd = SUPER SHIFT ALT, D,/" "$hypr_bindings_conf"
+      info "Moved panel keybind to Super+Shift+Alt+D in bindings.conf"
+    elif grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_conf" 2>/dev/null; then
       info "Panel keybind already exists in bindings.conf"
     else
       cat >> "$hypr_bindings_conf" << HYPR_PANEL
 
-bindd = SUPER ALT, G, Gaming Mode panel, exec, omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}
+bindd = SUPER SHIFT ALT, D, Gaming Mode panel, exec, omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}
 HYPR_PANEL
-      info "Added panel keybind (Super+Alt+G) to bindings.conf"
+      info "Added panel keybind (Super+Shift+Alt+D) to bindings.conf"
     fi
   else
     warn "No bindings.lua or bindings.conf under ${user_home}/.config/hypr - skipping panel keybind"
   fi
 
-  info "Control panel installed — open it from the bar icon or Super+Alt+G"
+  info "Control panel installed — open it from the bar icon or Super+Shift+Alt+D"
   info "Already-running shells need 'omarchy-restart-shell' to pick it up"
 }
 
@@ -2305,7 +2332,7 @@ enable_performance_mode() {
     fi
 
     # Set power profile to performance — sudo -n bypasses the polkit prompt
-    # (NOPASSWD allowed for `powerprofilesctl set *` in /etc/sudoers.d/gaming-session-switch)
+    # (NOPASSWD allowed for `powerprofilesctl set <profile>` in /etc/sudoers.d/gaming-mode-sysctl)
     if command -v powerprofilesctl &>/dev/null; then
         sudo -n powerprofilesctl set performance 2>/dev/null || \
             powerprofilesctl set performance 2>/dev/null && log "Power profile set to performance"
@@ -2512,7 +2539,8 @@ OS_SESSION_SELECT
   #      monitor briefly disconnects during the display manager restart
   #   2. Updates SDDM config to auto-login to the gaming session
   #   3. Kills any leftover gamescope processes from a previous session
-  #   4. Switches to VT2 (virtual terminal) to avoid display conflicts
+  #   4. Switches to VT8 (virtual terminal) to avoid display conflicts; VT8
+  #      has no getty, so the switch shows black rather than a tty2 login
   #   5. Restarts SDDM, which auto-logs into Gaming Mode
   info "Creating switch-to-gaming script..."
   local switch_script="/usr/local/bin/switch-to-gaming"
@@ -2587,7 +2615,7 @@ if [[ -f "$ENV_CONF" ]]; then
   fi
 fi
 
-sudo -n chvt 2 2>/dev/null || true
+sudo -n chvt 8 2>/dev/null || true
 sleep 0.3
 sudo -n systemctl restart sddm
 SWITCH_SCRIPT
@@ -2690,7 +2718,7 @@ sleep 2
 # not background/disown the restart to "make it survive": on a Relogin=true
 # system it would then fire a second time and kill the Hyprland session that
 # just came up.
-sudo -n chvt 2 2>/dev/null || true
+sudo -n chvt 8 2>/dev/null || true
 sleep 0.5
 # Atomic restart — stop+start (with stop and start as separate sudo calls)
 # was unreliable: stop/start aren't NOPASSWD-allowed individually (only
@@ -3330,15 +3358,15 @@ verify_installation() {
          '[.bar.layout[]?[]?.id] | index($id) != null' "$shell_json" >/dev/null 2>&1; then
       echo "  ✓ bar icon present in shell.json bar layout"
     else
-      echo "  ⚠ no bar icon — open the panel with Super+Alt+G (optional)"
+      echo "  ⚠ no bar icon — open the panel with Super+Shift+Alt+D (optional)"
     fi
   else
     echo "  ⚠ no shell.json (or jq) — can't verify panel wiring"
   fi
   if [[ -f "$hypr_bindings_lua" ]] && grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
-    echo "  ✓ panel keybind (Super+Alt+G) configured in bindings.lua"
+    echo "  ✓ panel keybind (Super+Shift+Alt+D) configured in bindings.lua"
   elif [[ -f "$hypr_bindings" ]] && grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings" 2>/dev/null; then
-    echo "  ✓ panel keybind (Super+Alt+G) configured in bindings.conf"
+    echo "  ✓ panel keybind (Super+Shift+Alt+D) configured in bindings.conf"
   else
     echo "  ⚠ panel keybind not found — bar icon still works (optional)"
   fi
