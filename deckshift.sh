@@ -1345,36 +1345,45 @@ setup_shell_plugin() {
   sudo -u "$current_user" omarchy plugin rescan >/dev/null 2>&1 || true
 
   # Panel toggle keybind. Same Lua-first, .conf-fallback rule as the Gaming Mode
-  # bind above. SUPER+ALT+G is unclaimed by the Omarchy defaults, so unlike
-  # SUPER+SHIFT+S it needs no hl.unbind() first.
+  # bind above. SUPER+SHIFT+ALT+D is unclaimed by the Omarchy defaults, so unlike
+  # SUPER+SHIFT+S it needs no hl.unbind() first. Earlier versions used
+  # SUPER+ALT+G, which is also Omarchy's "Move window out of group": both fired,
+  # so an existing bind on that key is moved. A bind on any other key was chosen
+  # by the user and is left alone.
   local hypr_bindings_lua="${user_home}/.config/hypr/bindings.lua"
   local hypr_bindings_conf="${user_home}/.config/hypr/bindings.conf"
   if [[ -f "$hypr_bindings_lua" ]]; then
-    if grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
+    if grep -q "\"SUPER + ALT + G\".*toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
+      sudo -u "$current_user" sed -i --follow-symlinks "/toggle ${DECKSHIFT_PLUGIN_ID}/s/\"SUPER + ALT + G\"/\"SUPER + SHIFT + ALT + D\"/" "$hypr_bindings_lua"
+      info "Moved panel keybind to Super+Shift+Alt+D in bindings.lua"
+    elif grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
       info "Panel keybind already exists in bindings.lua"
     else
       sudo -u "$current_user" tee -a "$hypr_bindings_lua" > /dev/null << HYPR_PANEL_LUA
 
--- DeckShift — toggle the Gaming Mode control panel (Super+Alt+G is Omarchy's ungroup)
+-- DeckShift — toggle the Gaming Mode control panel
 o.bind("SUPER + SHIFT + ALT + D", "Gaming Mode panel", "omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}")
 HYPR_PANEL_LUA
-      info "Added panel keybind (Super+Alt+G) to bindings.lua"
+      info "Added panel keybind (Super+Shift+Alt+D) to bindings.lua"
     fi
   elif [[ -f "$hypr_bindings_conf" ]]; then
-    if grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_conf" 2>/dev/null; then
+    if grep -q "bindd = SUPER ALT, G,.*toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_conf" 2>/dev/null; then
+      sed -i --follow-symlinks "/toggle ${DECKSHIFT_PLUGIN_ID}/s/bindd = SUPER ALT, G,/bindd = SUPER SHIFT ALT, D,/" "$hypr_bindings_conf"
+      info "Moved panel keybind to Super+Shift+Alt+D in bindings.conf"
+    elif grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_conf" 2>/dev/null; then
       info "Panel keybind already exists in bindings.conf"
     else
       cat >> "$hypr_bindings_conf" << HYPR_PANEL
 
-bindd = SUPER ALT, G, Gaming Mode panel, exec, omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}
+bindd = SUPER SHIFT ALT, D, Gaming Mode panel, exec, omarchy-shell shell toggle ${DECKSHIFT_PLUGIN_ID}
 HYPR_PANEL
-      info "Added panel keybind (Super+Alt+G) to bindings.conf"
+      info "Added panel keybind (Super+Shift+Alt+D) to bindings.conf"
     fi
   else
     warn "No bindings.lua or bindings.conf under ${user_home}/.config/hypr - skipping panel keybind"
   fi
 
-  info "Control panel installed — open it from the bar icon or Super+Alt+G"
+  info "Control panel installed — open it from the bar icon or Super+Shift+Alt+D"
   info "Already-running shells need 'omarchy-restart-shell' to pick it up"
 }
 
@@ -2755,12 +2764,11 @@ def find_keyboards():
 def monitor_keyboards(keyboards):
     meta_pressed = False
     shift_pressed = False
-    alt_pressed = False
     from selectors import DefaultSelector, EVENT_READ
     selector = DefaultSelector()
     for kbd in keyboards:
         selector.register(kbd, EVENT_READ)
-    log(f"Monitoring {len(keyboards)} keyboard(s) for Super+Shift+Alt+R...")
+    log(f"Monitoring {len(keyboards)} keyboard(s) for Super+Shift+R...")
     try:
         while True:
             for key, mask in selector.select():
@@ -2773,11 +2781,9 @@ def monitor_keyboards(keyboards):
                             meta_pressed = event.value > 0
                         elif event.code in (ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT):
                             shift_pressed = event.value > 0
-                        elif event.code in (ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT):
-                            alt_pressed = event.value > 0
                         elif event.code == ecodes.KEY_R and event.value == 1:
-                            if meta_pressed and shift_pressed and alt_pressed:
-                                log("Super+Shift+Alt+R detected! Switching to desktop...")
+                            if meta_pressed and shift_pressed:
+                                log("Super+Shift+R detected! Switching to desktop...")
                                 subprocess.run(['/usr/local/bin/switch-to-desktop'])
                                 return
                 except Exception as e:
@@ -3068,8 +3074,9 @@ SUDOERS_SWITCH
     else
       sudo -u "$current_user" tee -a "$hypr_bindings_lua" > /dev/null << 'HYPR_GAMING_LUA'
 
--- DeckShift — Gaming Mode (Super+Shift+Alt+S; leaves Omarchy's Super+Shift+S alone)
-o.bind("SUPER + SHIFT + ALT + S", "Gaming Mode", "/usr/local/bin/switch-to-gaming")
+-- DeckShift — reclaim SUPER+SHIFT+S from the Omarchy default, bind Gaming Mode
+hl.unbind("SUPER + SHIFT + S")
+o.bind("SUPER + SHIFT + S", "Gaming Mode", "/usr/local/bin/switch-to-gaming")
 HYPR_GAMING_LUA
       info "Added Gaming Mode keybind to bindings.lua"
     fi
@@ -3326,15 +3333,15 @@ verify_installation() {
          '[.bar.layout[]?[]?.id] | index($id) != null' "$shell_json" >/dev/null 2>&1; then
       echo "  ✓ bar icon present in shell.json bar layout"
     else
-      echo "  ⚠ no bar icon — open the panel with Super+Alt+G (optional)"
+      echo "  ⚠ no bar icon — open the panel with Super+Shift+Alt+D (optional)"
     fi
   else
     echo "  ⚠ no shell.json (or jq) — can't verify panel wiring"
   fi
   if [[ -f "$hypr_bindings_lua" ]] && grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings_lua" 2>/dev/null; then
-    echo "  ✓ panel keybind (Super+Alt+G) configured in bindings.lua"
+    echo "  ✓ panel keybind (Super+Shift+Alt+D) configured in bindings.lua"
   elif [[ -f "$hypr_bindings" ]] && grep -q "toggle ${DECKSHIFT_PLUGIN_ID}" "$hypr_bindings" 2>/dev/null; then
-    echo "  ✓ panel keybind (Super+Alt+G) configured in bindings.conf"
+    echo "  ✓ panel keybind (Super+Shift+Alt+D) configured in bindings.conf"
   else
     echo "  ⚠ panel keybind not found — bar icon still works (optional)"
   fi
@@ -3636,8 +3643,8 @@ execute_setup() {
     echo ""
     echo "  Dependencies, GPU configuration, and session switching are ready."
     echo ""
-    echo "  To switch to Gaming Mode: Press Super+Shift+Alt+S"
-    echo "  To return to Desktop:     Press Super+Shift+Alt+R"
+    echo "  To switch to Gaming Mode: Press Super+Shift+S"
+    echo "  To return to Desktop:     Press Super+Shift+R"
     echo ""
   fi
 
